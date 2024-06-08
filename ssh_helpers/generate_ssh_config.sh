@@ -4,6 +4,7 @@
 SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 source "$SCRIPT_DIR/../tooling_utils/colors.sh"
 source "$SCRIPT_DIR/../tooling_utils/utils.sh"
+source "$SCRIPT_DIR/../tooling_utils/watcloud_hosts.sh"
 
 # Check if we are running this script on WATcloud (not allowed)
 terminate_on_watcloud_host
@@ -13,7 +14,7 @@ read -p "Enter your WATcloud username: " username
 read -p "Enter your SSH private key path (e.g. ~/.ssh/id_rsa): " ssh_key_path
 
 # Generate the SSH configuration
-ssh_config="Host delta-ubuntu2 derek3-ubuntu2 tr-ubuntu3
+ssh_config="Host ${WATCLOUD_HOSTS[@]}
     Hostname %h.cluster.watonomous.ca
     User $username
     ForwardAgent Yes
@@ -32,14 +33,17 @@ read -p "Would you like to append this configuration to ~/.ssh/config? (y/n): " 
 
 if [[ $append_choice == "y" || $append_choice == "Y" ]]; then
     # Check if the Hosts already exist in the ~/.ssh/config
-    if grep -q -e "Host delta-ubuntu2" -e "Host derek3-ubuntu2" -e "Host tr-ubuntu3" ~/.ssh/config; then
-        echo -e "${RED}[ERROR] One or more of the Hosts (delta-ubuntu2, derek3-ubuntu2, tr-ubuntu3) already exist in ~/.ssh/config."
-        echo "Please delete all old WATO Hosts before proceeding.${NC}"
-    else
-        # Append the configuration to ~/.ssh/config
-        echo "$ssh_config" >> ~/.ssh/config
-        echo "Configuration appended to ~/.ssh/config."
-    fi
+    for host in "${WATCLOUD_HOSTS[@]}"; do
+        if grep -q -e "Host ${host}" ~/.ssh/config; then
+            echo -e "${RED}[ERROR] One or more of the Hosts (${WATCLOUD_HOSTS[@]}) already exist in ~/.ssh/config."
+            echo -e "Please delete all old WATO Hosts before proceeding.${NC}"
+            exit 1
+        fi
+    done
+    
+    # Append the configuration to ~/.ssh/config
+    echo "$ssh_config" >> ~/.ssh/config
+    echo "Configuration appended to ~/.ssh/config."
 else
     echo "Configuration not appended. Please copy the configuration and add it to your ~/.ssh/config."
 fi
