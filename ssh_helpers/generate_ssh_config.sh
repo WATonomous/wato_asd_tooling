@@ -1,20 +1,12 @@
 #!/bin/bash
 
-# Color Definitions
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+# Colors and Utils
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+source "$SCRIPT_DIR/../tooling_utils/colors.sh"
+source "$SCRIPT_DIR/../tooling_utils/utils.sh"
 
-# Do not run this on WATcloud Machines
-current_host=$(hostname)
-hosts=("delta-ubuntu2" "derek3-ubuntu2" "tr-ubuntu3")
-for host in "${hosts[@]}"; do
-    if [[ "$current_host" == "$host" ]]; then
-        echo -e "${RED}[ERROR] You are currently running this script on one of the listed hosts (${hosts[@]}).${NC}"
-        echo "Please run this script outside of WATcloud and on a computer that you want to use to connect to WATcloud."
-        exit 1
-    fi
-done
+# Check if we are running this script on WATcloud (not allowed)
+terminate_on_watcloud_host
 
 # Proceed with SSH Configuration generation
 read -p "Enter your WATcloud username: " username
