@@ -18,7 +18,7 @@ done
 
 # Proceed with SSH Configuration generation
 read -p "Enter your WATcloud username: " username
-read -p "Enter your SSH private key path (e.g., ~/.ssh/id_rsa): " ssh_key_path
+read -p "Enter your SSH private key path (e.g. ~/.ssh/id_rsa): " ssh_key_path
 
 # Generate the SSH configuration
 ssh_config="Host delta-ubuntu2 derek3-ubuntu2 tr-ubuntu3
