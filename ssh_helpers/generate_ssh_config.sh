@@ -17,7 +17,7 @@ done
 
 # Proceed with SSH Configuration generation
 read -p "Enter the username: " username
-read -p "Enter the SSH key path (e.g., ~/.ssh/id_rsa): " ssh_key_path
+read -p "Enter the SSH private key path (e.g., ~/.ssh/id_rsa): " ssh_key_path
 
 # Generate the SSH configuration
 ssh_config="Host delta-ubuntu2 derek3-ubuntu2 tr-ubuntu3
@@ -30,7 +30,9 @@ ssh_config="Host delta-ubuntu2 derek3-ubuntu2 tr-ubuntu3
 
 # Display SSH configuration
 echo "The following is your generated SSH Config:"
+echo ""
 echo "$ssh_config"
+echo ""
 
 # Prompt the user to append the configuration to ~/.ssh/config
 read -p "Would you like to append this configuration to ~/.ssh/config? (y/n): " append_choice
@@ -38,7 +40,8 @@ read -p "Would you like to append this configuration to ~/.ssh/config? (y/n): " 
 if [[ $append_choice == "y" || $append_choice == "Y" ]]; then
     # Check if the Hosts already exist in the ~/.ssh/config
     if grep -q -e "Host delta-ubuntu2" -e "Host derek3-ubuntu2" -e "Host tr-ubuntu3" ~/.ssh/config; then
-        echo -e "${RED}One or more of the Hosts (delta-ubuntu2, derek3-ubuntu2, tr-ubuntu3) already exist in ~/.ssh/config. Please delete all old WATO Hosts before proceeding.${NC}"
+        echo -e "${RED}One or more of the Hosts (delta-ubuntu2, derek3-ubuntu2, tr-ubuntu3) already exist in ~/.ssh/config."
+        echo "Please delete all old WATO Hosts before proceeding.${NC}"
     else
         # Append the configuration to ~/.ssh/config
         echo "$ssh_config" >> ~/.ssh/config
