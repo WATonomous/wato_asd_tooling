@@ -17,8 +17,8 @@ for host in "${hosts[@]}"; do
 done
 
 # Proceed with SSH Configuration generation
-read -p "Enter the username: " username
-read -p "Enter the SSH private key path (e.g., ~/.ssh/id_rsa): " ssh_key_path
+read -p "Enter your WATcloud username: " username
+read -p "Enter your SSH private key path (e.g., ~/.ssh/id_rsa): " ssh_key_path
 
 # Generate the SSH configuration
 ssh_config="Host delta-ubuntu2 derek3-ubuntu2 tr-ubuntu3
@@ -46,8 +46,8 @@ if [[ $append_choice == "y" || $append_choice == "Y" ]]; then
     else
         # Append the configuration to ~/.ssh/config
         echo "$ssh_config" >> ~/.ssh/config
-        echo "Configuration appended to c"
+        echo "Configuration appended to ~/.ssh/config."
     fi
 else
-    echo "Configuration not appended. Please copy the configuration and add it to your echo ~/.ssh/config."
+    echo "Configuration not appended. Please copy the configuration and add it to your ~/.ssh/config."
 fi
