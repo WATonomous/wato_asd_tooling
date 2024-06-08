@@ -13,16 +13,11 @@ if [[ -z "$SSH_AUTH_SOCK" ]]; then
     echo -e "${YELLOW}Starting SSH agent...${NC}"
     eval "$(ssh-agent -s)"
 else
-    echo -e "${YELLOW}SSH agent is already running.${NC}"
+    echo -e "${YELLOW}SSH agent is already running. Using currently running agent.${NC}"
 fi
 
 # Prompt the user for the SSH key path
-read -p "Enter the SSH key path (default: ~/.ssh/id_rsa): " ssh_key_path
-
-# Use the default path if no input is provided
-if [[ -z "$ssh_key_path" ]]; then
-    ssh_key_path="~/.ssh/id_rsa"
-fi
+read -p "Enter the SSH private key path (e.g. ~/.ssh/id_rsa): " ssh_key_path
 
 # Resolve the path to the SSH key
 resolved_ssh_key_path=$(eval echo $ssh_key_path)
