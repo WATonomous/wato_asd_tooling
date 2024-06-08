@@ -5,13 +5,19 @@ A plethora of bash scripts that will be useful to developers at WATonomous.
 ```bash
 git clone git@github.com:WATonomous/wato_asd_tooling.git
 cd wato_asd_tooling
-bash <whatever_the_script_is_called>
+bash <whatever_the_script_to_use>
 ```
 
 # Directory of Scripts
-`ssh_helpers/configure_agent_forwarding.sh` Configures your agent forwarding according to [the steps here](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/using-ssh-agent-forwarding). This is helpful for when you want to use GitHub in the server. [more](#generate-ssh-configuration)
+`ssh_helpers/configure_agent_forwarding.sh` **[RUN ON YOUR LOCAL MACHINE]** Configures your agent forwarding according to [the steps here](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/using-ssh-agent-forwarding). This is helpful for when you want to use GitHub in the server. [more](#generate-ssh-configuration)
 
-`ssh_helpers/generate_ssh_config.sh` Generates, and optionally appends, an SSH Configuration to your ~/.ssh/config. [more](#generate-ssh-configuration)
+`ssh_helpers/generate_ssh_config.sh` **[RUN ON YOUR LOCAL MACHINE]** Generates, and optionally appends, an SSH Configuration to your ~/.ssh/config. [more](#generate-ssh-configuration)
+
+`slurm_presets/small_dev_node.sh`
+
+`slurm_presets/medium_dev_node.sh`
+
+`slurm_presets/large_dev_node.sh`
 
 # Descriptions
 Provides a better explanation of what the script does.
