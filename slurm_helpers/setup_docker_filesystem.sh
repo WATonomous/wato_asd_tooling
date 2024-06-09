@@ -2,16 +2,15 @@
 
 # Colors
 SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-source "$SCRIPT_DIR/../../tooling_utils/colors.sh"
+source "$SCRIPT_DIR/../tooling_utils/colors.sh"
 
 # Define the path and file name
 FILE_PATH="/mnt/wato-drive2/docker_filesystems/$USER/$USER.img"
 
-check_if_docker_filesystem_exists() {
+check_docker_filesystem_exists() {
   # Check if a filesystem already exists on the file
   if [ -f $FILE_PATH ] && blkid $FILE_PATH &> /dev/null; then
-    echo "Filesystem already exists on: $FILE_PATH"
-    echo "Exiting script to avoid overwriting existing filesystem."
+    echo "Docker filesystem already exists on: $FILE_PATH"
     return 0
   fi
 
