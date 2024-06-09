@@ -55,6 +55,29 @@ while ! docker ps > /dev/null 2>&1; do
     sleep 1
 done
 
-####################### Startup VSCode Tunnel #######################
-curl --silent --location 'https://code.visualstudio.com/sha/download?build=stable&os=cli-alpine-x64' | tar -xzv 
-./code tunnel --name slurm-${SLURM_JOB_ID}
+####################### Start SSH Daemon #######################
+# Define the key file path
+KEY_PATH="$HOME/.ssh/slurm_key"
+
+# Check if the key file exists
+if [ -f "$KEY_PATH" ]; then
+    echo "Key file $KEY_PATH already exists."
+else
+    echo "Key file $KEY_PATH does not exist. Generating a new key pair..."
+    
+    # Generate a new SSH key pair
+    ssh-keygen -t rsa -b 2048 -f "$KEY_PATH" -N ""
+    
+    if [ $? -eq 0 ]; then
+        echo "Key pair generated successfully."
+    else
+        echo "Failed to generate key pair."
+        exit 1
+    fi
+fi
+
+# This is the same base port calculation used in the monorepo
+BASE_PORT=$(($(id -u)*20))
+SSH_PORT=$((BASE_PORT--))
+
+/usr/sbin/sshd -D -p $SSH_PORT -f /dev/null -h $KEY_PATH

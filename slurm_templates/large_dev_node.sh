@@ -18,4 +18,4 @@ fi
 # Run SLURM
 srun --cpus-per-task $NUMER_OF_CPUS --mem $MEMORY \
     --gres shard:$VRAM,tmpdisk:$TMP_DISK_SIZE --time $USAGE_TIME \
-    --pty bash "$SCRIPT_DIR/../slurm_configurations/dev_node_vscode.slurm"
+    --pty bash "$SCRIPT_DIR/../slurm_configurations/dev_node_ssh.slurm"
