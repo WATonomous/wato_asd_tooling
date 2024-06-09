@@ -16,7 +16,7 @@ fi
 echo "In order to create the configuration, we need your unique SSH_PORT on WATcloud."
 echo "To find this, connect to one of the WATcloud servers and run:"
 echo ""
-echo "echo $(( ($(id -u)*20) - 1 ))"
+echo " echo \$(( (\$(id -u)*20) - 1 )) "
 echo ""
 read -p "Enter Port Number Here: " ssh_port
 
@@ -26,7 +26,7 @@ ssh_config="Host watcloud-slurm-node
     ForwardAgent Yes
     PreferredAuthentifications publickey
     IdentityFile $ssh_key_path
-    ProxyCommand ssh derek3-ubuntu2.cluster.watonomous.ca "nc $(/opt/slurm/bin/squeue --user $username --name=JOB_NAME --states=R -h -O NodeList) ${ssh_port}""
+    ProxyCommand ssh derek3-ubuntu2.cluster.watonomous.ca \"nc \$(/opt/slurm/bin/squeue --user $username --name=JOB_NAME --states=R -h -O NodeList) ${ssh_port}\""
 
 # Display SSH configuration
 echo "The following is your generated SSH Config:"
