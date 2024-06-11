@@ -2,13 +2,16 @@
 
 # Define the key file path
 KEY_PATH="$HOME/.ssh/slurm_key.pub"
+JOB_NAME="wato_slurm_dev"
+
+read -p "Enter your WATcloud username: " username
+read -p "Enter your SSH private key path (e.g. ~/.ssh/id_rsa): " ssh_key_path
 
 # Check if the key file exists, if not, copy from WATcloud
 if [ -f "$KEY_PATH" ]; then
     echo "Key file $KEY_PATH already exists."
 else
     echo "Key file $KEY_PATH does not exist. Copying your slurm key from the WATcloud server."
-    read -p "Enter your WATcloud username: " username
     scp $username@tr-ubuntu3:/home/$username/.ssh/slurm_key.pub $KEY_PATH
 fi
 
@@ -24,9 +27,10 @@ read -p "Enter Port Number Here: " ssh_port
 ssh_config="Host watcloud-slurm-node
     User $username
     ForwardAgent Yes
-    PreferredAuthentifications publickey
+    PreferredAuthentications publickey
+    PubkeyAuthentication yes
     IdentityFile $ssh_key_path
-    ProxyCommand ssh derek3-ubuntu2.cluster.watonomous.ca \"nc \$(/opt/slurm/bin/squeue --user $username --name=JOB_NAME --states=R -h -O NodeList) ${ssh_port}\""
+    ProxyCommand ssh derek3-ubuntu2.cluster.watonomous.ca \"nc \$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList) ${ssh_port}\""
 
 # Display SSH configuration
 echo "The following is your generated SSH Config:"
