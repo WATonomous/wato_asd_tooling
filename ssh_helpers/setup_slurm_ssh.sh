@@ -30,7 +30,7 @@ ssh_config="Host watcloud-slurm-node
     PreferredAuthentications publickey
     PubkeyAuthentication yes
     IdentityFile $ssh_key_path
-    ProxyCommand ssh derek3-ubuntu2.cluster.watonomous.ca \"nc \$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList) ${ssh_port}\""
+    ProxyCommand ssh tr-ubuntu3 \"nc \$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList) ${ssh_port}\""
 
 # Display SSH configuration
 echo "The following is your generated SSH Config:"
