@@ -66,7 +66,7 @@ else
     echo "Key file $KEY_PATH does not exist. Generating a new key pair..."
     
     # Generate a new SSH key pair
-    ssh-keygen -t rsa -b 2048 -f "$KEY_PATH" -N ""
+    ssh-keygen -t rsa -f "$KEY_PATH" -N ""
     
     if [ $? -eq 0 ]; then
         echo "Key pair generated successfully."
@@ -78,6 +78,6 @@ fi
 
 # This is the same base port calculation used in the monorepo
 BASE_PORT=$(($(id -u)*20))
-SSH_PORT=$((BASE_PORT--))
+SSH_PORT=$(($BASE_PORT - 1))
 
-/usr/sbin/sshd -D -p $SSH_PORT -f /dev/null -h $KEY_PATH
+/usr/sbin/sshd -d -D -p $SSH_PORT -f /dev/null -h $KEY_PATH
