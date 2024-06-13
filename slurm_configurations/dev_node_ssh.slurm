@@ -12,12 +12,14 @@ echo -e "${NC}"
 
 ####################### Setup Docker Daemon #######################
 # Fuse user's docker filesystem if it exists
+DOCKERD_CONFIG_FILE="/etc/docker/daemon.json"
 if [ -f $FILE_PATH ] && blkid $FILE_PATH &> /dev/null; then
   if [ ! -d "/tmp/docker" ]; then
     mkdir -p "/tmp/docker"
     echo "Directory created: /tmp/docker"
   fi
-  fuse2fs -o nonempty -o fakeroot /mnt/wato-drive2/docker_filesystems/$USER/$USER.img /tmp/docker
+  fuse2fs -o allow_other -o nonempty -o fakeroot /mnt/wato-drive2/docker_filesystems/$USER/$USER.img /tmp/docker
+  DOCKERD_CONFIG_FILE="$SCRIPT_DIR/../daemon.json"
 fi
 
 # Startup docker daemon
@@ -29,7 +31,7 @@ export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/run}
 export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/tmp/config}
 export DOCKER_DATA_ROOT=${DOCKER_DATA_ROOT:-/tmp/docker}
 export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/docker.sock"
-export DOCKERD_CONFIG_FILE=${DOCKERD_CONFIG_FILE:-"/etc/docker/daemon.json"}
+export DOCKERD_CONFIG_FILE=${DOCKERD_CONFIG_FILE}
 
 __dockerd_log_file="/tmp/dockerd.log"
 
