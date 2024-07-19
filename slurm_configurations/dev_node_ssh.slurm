@@ -82,4 +82,4 @@ fi
 BASE_PORT=$(($(id -u)*20))
 SSH_PORT=$(($BASE_PORT - 1))
 
-/usr/sbin/sshd -d -D -p $SSH_PORT -f /dev/null -h $KEY_PATH
+/usr/sbin/sshd -D -p $SSH_PORT -f /dev/null -h $KEY_PATH
