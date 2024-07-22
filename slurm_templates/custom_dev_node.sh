@@ -36,5 +36,5 @@ fi
 
 # Run SLURM
 srun --cpus-per-task $NUMER_OF_CPUS --mem $MEMORY \
-    --gres tmpdisk:$TMP_DISK_SIZE --time $USAGE_TIME --job-name $JOB_NAME \
+    --gres tmpdisk:$TMP_DISK_SIZE,shard:$VRAM --time $USAGE_TIME --job-name $JOB_NAME \
     --pty bash "$SCRIPT_DIR/../slurm_configurations/dev_node_ssh.slurm"
