@@ -42,7 +42,7 @@ if [[ $append_choice == "y" || $append_choice == "Y" ]]; then
     done
     
     # Append the configuration to ~/.ssh/config
-    echo "$ssh_config" >> ~/.ssh/config
+    echo -e "\n$ssh_config" >> ~/.ssh/config
     echo "Configuration appended to ~/.ssh/config."
 else
     echo "Configuration not appended. Please copy the configuration and add it to your ~/.ssh/config."
