@@ -32,6 +32,17 @@ ssh_config="Host watcloud-slurm-node
     IdentityFile $ssh_key_path
     ProxyCommand ssh tr-ubuntu3 \"nc \$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList | awk '{print \$1;}').cluster.watonomous.ca ${ssh_port}\""
 
+# Check if the system is either Linux or macOS
+if [[ "$os_type" == "Linux" || "$os_type" == "Darwin" ]]; then
+    ssh_config="Host watcloud-slurm-node
+        User $username
+        ForwardAgent Yes
+        PreferredAuthentications publickey
+        PubkeyAuthentication yes
+        IdentityFile $ssh_key_path
+        ProxyCommand ssh tr-ubuntu3 \"nc \\\$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList | awk '{print \\\$1;}').cluster.watonomous.ca ${ssh_port}\""
+fi
+
 # Display SSH configuration
 echo "The following is your generated SSH Config:"
 echo ""
