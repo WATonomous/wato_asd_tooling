@@ -1,5 +1,32 @@
 #!/bin/bash
 
+# Load docker session if exists, create file in wato-drive2 otherwise
+DOCKER_SESSION_DIR="/mnt/wato-drive2/slurm-docker-sessions/$(id -u)/"
+DOCKER_STATE_FILE="slurm-docker-state.tar.zst"
+DOCKER_STATE_PATH="${DOCKER_SESSION_DIR}/${DOCKER_STATE_FILE}"
+
+if [[ -f "$DOCKER_STATE_PATH" ]]; then
+    echo "Saved docker state found. Loading..."
+    zstd --fast=3 -d "$DOCKER_STATE_PATH" --stdout | pv | rootlesskit tar --blocking-factor=64 -xpf - -C /
+else
+    echo "Docker state file not found. Initializing directory to store docker state file."
+    mkdir -p "$DOCKER_SESSION_DIR"
+    chmod 700 "$DOCKER_SESSION_DIR"
+    echo -e "Docker state directory initialized."
+fi
+
+trap ctrl_c INT
+
+function ctrl_c() {
+    echo -e "Saving docker state..."
+    if [[ ! -d "/tmp/docker" || ! -d "/tmp/run" || ! -d "$DOCKER_SESSION_DIR" ]]; then
+        echo -e "One or more required directories do not exist. Exiting without saving."
+        exit 1
+    fi
+
+    rootlesskit tar -cf - /tmp/docker /tmp/run | pzstd | pv > "$DOCKER_STATE_PATH"
+}
+
 ####################### Notify User of Startup #######################
 echo -e "\033[0;33m[NOTICE] SLURM JOB STARTING WITH JOB_ID ${SLURM_JOB_ID}. To connect to it through the terminal, use:"
 echo -e ""
