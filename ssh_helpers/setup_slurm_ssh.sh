@@ -24,7 +24,7 @@ echo ""
 read -p "Enter Port Number Here: " ssh_port
 
 # Generate the SSH configuration
-ssh_config="Host watcloud-slurm-node
+ssh_config="Host asd-dev-session
     User $username
     ForwardAgent Yes
     PreferredAuthentications publickey
@@ -34,7 +34,7 @@ ssh_config="Host watcloud-slurm-node
 
 # Check if the system is either Linux or macOS
 if [[ "$os_type" == "Linux" || "$os_type" == "Darwin" ]]; then
-    ssh_config="Host watcloud-slurm-node
+    ssh_config="Host asd-dev-session
         User $username
         ForwardAgent Yes
         PreferredAuthentications publickey
@@ -54,9 +54,9 @@ read -p "Would you like to append this configuration to ~/.ssh/config? (y/n): " 
 
 if [[ $append_choice == "y" || $append_choice == "Y" ]]; then
     # Check if the Hosts already exist in the ~/.ssh/config
-    if grep -q -e "Host watcloud-slurm-node" ~/.ssh/config; then
-        echo -e "${RED}[ERROR] watcloud-slurm-node already exist in ~/.ssh/config."
-        echo -e "Please delete the watcloud-slurm-node configuration before proceeding.${NC}"
+    if grep -q -e "Host asd-dev-session" ~/.ssh/config; then
+        echo -e "${RED}[ERROR] asd-dev-session already exist in ~/.ssh/config."
+        echo -e "Please delete the asd-dev-session configuration before proceeding.${NC}"
         exit 1
     fi
 
