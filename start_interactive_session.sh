@@ -29,14 +29,15 @@ EOF
 # Check the exit status of the previous command
 if [ $? -eq 1 ]; then
     echo "Copying asd_interactive_job.slurm to the remote machine..."
-    scp -i $SSH_KEY $LOCAL_SLURM_FILE $REMOTE_USER@$REMOTE_HOST:~/slurm_tooling/asd_interactive_job.slurm
+    scp -i $SSH_KEY $LOCAL_SLURM_FILE $REMOTE_USER@$REMOTE_HOST:~/slurm_tooling/
 fi
 
-# SSH and execute the script on the remote machine
-ssh -tt -i $SSH_KEY $REMOTE_USER@$REMOTE_HOST << EOF
+# SSH command to run remote script
+ssh -tt -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << EOF
 #!/bin/bash
 
-srun --cpus-per-task $NUMER_OF_CPUS --mem $MEMORY \\
-    --gres tmpdisk:$TMP_DISK_SIZE,shard:$VRAM --time $USAGE_TIME --job-name wato_slurm_dev \\
+# Run srun command
+srun --cpus-per-task=$NUMER_OF_CPUS --mem=$MEMORY \\
+    --gres=tmpdisk:$TMP_DISK_SIZE,shard=$VRAM --time=$USAGE_TIME --job-name=wato_slurm_dev \\
     --pty bash ~/slurm_tooling/asd_interactive_job.slurm
 EOF

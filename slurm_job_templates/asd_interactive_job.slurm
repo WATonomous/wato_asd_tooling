@@ -5,6 +5,22 @@ DOCKER_SESSION_DIR="/mnt/wato-drive2/slurm-docker-sessions/$(id -u)/"
 DOCKER_STATE_FILE="slurm-docker-state.tar.zst"
 DOCKER_STATE_PATH="${DOCKER_SESSION_DIR}/${DOCKER_STATE_FILE}"
 
+# Function to handle Docker state save
+save_docker_state() {
+    echo -e "Saving docker state..."
+    if [[ ! -d "/tmp/docker" || ! -d "/tmp/run" || ! -d "$DOCKER_SESSION_DIR" ]]; then
+        echo -e "One or more required directories do not exist. Exiting without saving."
+        exit 1
+    fi
+
+    # Save the state using tar and compress with zstd
+    if rootlesskit tar -cf - /tmp/docker /tmp/run | pzstd | pv > "$DOCKER_STATE_PATH"; then
+        echo -e "Docker state saved successfully."
+    else
+        echo -e "Failed to save Docker state."
+    fi
+}
+
 if [[ -f "$DOCKER_STATE_PATH" ]]; then
     echo "Saved docker state found. Loading..."
     zstd --fast=3 -d "$DOCKER_STATE_PATH" --stdout | pv | rootlesskit tar --blocking-factor=64 -xpf - -C /
@@ -14,18 +30,6 @@ else
     chmod 700 "$DOCKER_SESSION_DIR"
     echo -e "Docker state directory initialized."
 fi
-
-trap ctrl_c INT
-
-function ctrl_c() {
-    echo -e "Saving docker state..."
-    if [[ ! -d "/tmp/docker" || ! -d "/tmp/run" || ! -d "$DOCKER_SESSION_DIR" ]]; then
-        echo -e "One or more required directories do not exist. Exiting without saving."
-        exit 1
-    fi
-
-    rootlesskit tar -cf - /tmp/docker /tmp/run | pzstd | pv > "$DOCKER_STATE_PATH"
-}
 
 ####################### Notify User of Startup #######################
 echo -e "\033[0;33m[NOTICE] SLURM JOB STARTING WITH JOB_ID ${SLURM_JOB_ID}. To connect to it through the terminal, use:"
@@ -61,4 +65,13 @@ fi
 BASE_PORT=$(($(id -u)*20))
 SSH_PORT=$(($BASE_PORT - 1))
 
-/usr/sbin/sshd -D -p $SSH_PORT -f /dev/null -h $KEY_PATH
+/usr/sbin/sshd -D -p $SSH_PORT -f /dev/null -h $KEY_PATH &
+
+####################### Periodically Save Docker State #######################
+# Set the interval (e.g., 900 seconds = 15 minutes)
+INTERVAL=900
+
+while true; do
+    sleep $INTERVAL
+    save_docker_state
+done
