@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+source "$SCRIPT_DIR/../tooling_utils/colors.sh"
+
 # Define the key file path
 KEY_PATH="$HOME/.ssh/slurm_key.pub"
 JOB_NAME="wato_slurm_dev"
@@ -33,7 +36,8 @@ ssh_config="Host asd-dev-session
     ProxyCommand ssh tr-ubuntu3 \"nc \$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList | awk '{print \$1;}').cluster.watonomous.ca ${ssh_port}\""
 
 # Check if the system is either Linux or macOS
-if [[ "$os_type" == "Linux" || "$os_type" == "Darwin" ]]; then
+if [[ "$(uname)" == "Darwin" || "$(expr substr $(uname -s) 1 5)" == "Linux" ]]; then
+    echo -e "${YELLOW}OS is on Darwin or Linux, using a different ssh_config.${NC}"
     ssh_config="Host asd-dev-session
         User $username
         ForwardAgent Yes
