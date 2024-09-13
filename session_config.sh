@@ -4,13 +4,9 @@
 ######################################
 
 # Variables for SSH and remote execution
-# REMOTE_USER="your_watcloud_username"
-# REMOTE_HOST="watcloud_remote_host" # [tr-ubuntu3, derek3-ubuntu2]
-# SSH_KEY="path_to_private_key"
-
-REMOTE_USER="eddyzhou"
-REMOTE_HOST="derek3-ubuntu2" # [tr-ubuntu3, derek3-ubuntu2]
-SSH_KEY="~/.ssh/id_rsa"
+REMOTE_USER="your_watcloud_username"
+REMOTE_HOST="watcloud_remote_host" # [tr-ubuntu3, derek3-ubuntu2]
+SSH_KEY="path_to_private_key"
 
 # SLURM job configuration
 NUMER_OF_CPUS=4
