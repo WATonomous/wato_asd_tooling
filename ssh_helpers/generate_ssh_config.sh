@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/../tooling_utils/watcloud_hosts.sh"
 terminate_on_watcloud_host
 
 # Proceed with SSH Configuration generation
-read -p "Enter your WATcloud username: " username
+read -p "Enter your WATcloud computer cluster username: " username
 read -p "Enter your SSH private key path (e.g. ~/.ssh/id_rsa): " ssh_key_path
 
 # Generate the SSH configuration
