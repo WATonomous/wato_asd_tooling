@@ -1,5 +1,12 @@
 #!/bin/bash
 
+cleanup() {
+  echo "Ctrl+C detected. Exiting gracefully..."
+  exit 0
+}
+
+trap cleanup SIGINT
+
 # Load docker session if exists, create file in wato-drive2 otherwise
 DOCKER_SESSION_DIR="/mnt/wato-drive2/slurm-docker-sessions/$(id -u)/"
 DOCKER_STATE_FILE="slurm-docker-state.tar.zst"
