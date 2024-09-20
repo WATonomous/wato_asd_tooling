@@ -27,13 +27,15 @@ fi
 EOF
 
 # Check the exit status of the previous command
-if [ $? -eq 1 ]; then
+if [ $? -eq 1  || UPDATE_REMOTE_FILES ]; then
     echo "Copying asd_interactive_job.slurm to the remote machine..."
     scp -i $SSH_KEY $LOCAL_SLURM_FILE $REMOTE_USER@$REMOTE_HOST:~/slurm_tooling/
+    echo "coping the other thing too"
+    scp -i THING
 fi
 
 # SSH command to run remote script
-ssh -tt -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << EOF
+ssh -t -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" << EOF
 #!/bin/bash
 
 sed -i 's/\r$//' $REMOTE_SLURM_FILE
@@ -44,4 +46,4 @@ srun --cpus-per-task=$NUMER_OF_CPUS --mem=$MEMORY \\
     --pty bash ~/slurm_tooling/asd_interactive_job.slurm
 EOF
 
-ssh -t HOST ~/some_script.sh
+# ssh -t HOST "~/some_script.sh"
