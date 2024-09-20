@@ -9,7 +9,7 @@ SIGINT_COUNT=0
 
 cleanup() {
     SIGINT_COUNT=$((SIGINT_COUNT + 1))
-    echo "Ctrl+C detected. Exiting gracefully... ()"
+    echo "Ctrl+C detected. Exiting gracefully...(press Ctrl+C again to force)"
 
     if [ "$SIGINT_COUNT" -gt 1 ]; then
         echo "Second Ctrl+C detected. Exiting forcefully."
