@@ -1,7 +1,15 @@
 #!/bin/bash
 
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+    1>&2 echo "This script is meant to be run from within a Slurm job. We are not in a Slurm job. Exiting..."
+    exit 1
+fi
+
 cleanup() {
   echo "Ctrl+C detected. Exiting gracefully..."
+  
+  # if 2 cleanups, exit right away
+
   exit 0
 }
 
