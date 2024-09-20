@@ -5,12 +5,18 @@ if [ -z "${SLURM_JOB_ID:-}" ]; then
     exit 1
 fi
 
-cleanup() {
-  echo "Ctrl+C detected. Exiting gracefully..."
-  
-  # if 2 cleanups, exit right away
+SIGINT_COUNT=0
 
-  exit 0
+cleanup() {
+    SIGINT_COUNT=$((SIGINT_COUNT + 1))
+    echo "Ctrl+C detected. Exiting gracefully... ()"
+
+    if [ "$SIGINT_COUNT" -gt 1 ]; then
+        echo "Second Ctrl+C detected. Exiting forcefully."
+        exit 1  
+    fi
+    
+    exit 0
 }
 
 trap cleanup SIGINT
