@@ -1,5 +1,26 @@
 #!/bin/bash
 
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+    1>&2 echo "This script is meant to be run from within a Slurm job. We are not in a Slurm job. Exiting..."
+    exit 1
+fi
+
+SIGINT_COUNT=0
+
+cleanup() {
+    SIGINT_COUNT=$((SIGINT_COUNT + 1))
+    echo "Ctrl+C detected. Exiting gracefully...(press Ctrl+C again to force)"
+
+    if [ "$SIGINT_COUNT" -gt 1 ]; then
+        echo "Second Ctrl+C detected. Exiting forcefully."
+        exit 1  
+    fi
+    
+    exit 0
+}
+
+trap cleanup SIGINT
+
 # Load docker session if exists, create file in wato-drive2 otherwise
 DOCKER_SESSION_DIR="/mnt/wato-drive2/slurm-docker-sessions/$(id -u)/"
 DOCKER_STATE_FILE="slurm-docker-state.tar.zst"
