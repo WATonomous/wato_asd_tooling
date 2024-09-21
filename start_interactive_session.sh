@@ -32,7 +32,7 @@ EOF
 
 # Check the exit status of the previous command
 # UPDATE_WATO_ASD_TOOLING is an optionally set env var to be exported by the user
-if [ $? -eq 1 ] || [ -n "$UPDATE_WATO_ASD_TOOLING" ]; then
+if [ $? -eq 1 ] || [ "$UPDATE_WATO_ASD_TOOLING" -eq 1 ]; then
     echo "Copying asd_interactive_job.slurm to the remote machine..."
     scp -p -i "$SSH_KEY" "$LOCAL_SLURM_JOB_SCRIPT" "$REMOTE_USER@$REMOTE_HOST:~/slurm_tooling/"
     
