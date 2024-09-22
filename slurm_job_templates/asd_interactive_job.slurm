@@ -15,7 +15,12 @@ cleanup() {
         echo "Second Ctrl+C detected. Exiting forcefully."
         exit 1  
     fi
-    
+
+    if ! docker info > /dev/null 2>&1 && [[ "$SAVE_DOCKER_STATE_ON_EXIT" -eq 1 ]]; then
+        echo -e "Saving Docker state."
+        save_docker_state
+    fi
+
     exit 0
 }
 
@@ -28,18 +33,24 @@ DOCKER_STATE_PATH="${DOCKER_SESSION_DIR}/${DOCKER_STATE_FILE}"
 
 # Function to handle Docker state save
 save_docker_state() {
-    echo -e "Saving docker state..."
     if [[ ! -d "/tmp/docker" || ! -d "/tmp/run" || ! -d "$DOCKER_SESSION_DIR" ]]; then
         echo -e "One or more required directories do not exist. Exiting without saving."
         exit 1
     fi
 
+    temp_file=$(mktemp "$DOCKER_STATE_PATH.tmp.XXXXXX")
+    trap 'echo -e "Saving Docker state was canceled."; rm -f "$temp_file"; exit' INT TERM
+
     # Save the state using tar and compress with zstd
-    if rootlesskit tar -cf - /tmp/docker /tmp/run | pzstd | pv > "$DOCKER_STATE_PATH"; then
+    if rootlesskit tar -cf - /tmp/docker /tmp/run | pzstd | pv > "$temp_file" \
+        && mv "$temp_file" "$DOCKER_STATE_PATH"
+    then
         echo -e "Docker state saved successfully."
     else
         echo -e "Failed to save Docker state."
     fi
+
+    trap - INT TERM
 }
 
 if [[ -f "$DOCKER_STATE_PATH" ]]; then

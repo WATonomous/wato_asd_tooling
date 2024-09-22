@@ -16,4 +16,5 @@ export TMP_DISK_SIZE=10240     # How much temporary storage you want [in MiB]
 export VRAM=0                  # How much GPU VRAM you want [in MiB]
 
 # SLURM tooling configuration
-export UPDATE_WATO_ASD_TOOLING=0 # Set to 1 if you've recently pulled this repo
+export UPDATE_WATO_ASD_TOOLING=1 # Set to 1 if you want to update ASD tooling on remote hosts
+export SAVE_DOCKER_STATE_ON_EXIT=1 # Set to 1 if you want to save docker state on exit
