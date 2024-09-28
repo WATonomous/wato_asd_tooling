@@ -40,6 +40,7 @@ if [ $? -eq 1 ] || [ "$UPDATE_WATO_ASD_TOOLING" -eq 1 ]; then
     TMP_JOB_LAUNCH_SCRIPT=$(mktemp)
     chmod +x "$TMP_JOB_LAUNCH_SCRIPT"
     envsubst < "$LOCAL_JOB_LAUNCH_TEMPLATE" > "$TMP_JOB_LAUNCH_SCRIPT"
+    sed -i 's/\r$//' "$TMP_JOB_LAUNCH_SCRIPT"
     scp -p -i "$SSH_KEY" "$TMP_JOB_LAUNCH_SCRIPT" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_JOB_LAUNCH_SCRIPT"
 fi
 
