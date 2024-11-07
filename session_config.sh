@@ -18,4 +18,4 @@ export VRAM=0                  # How much GPU VRAM you want [in MiB]
 # SLURM tooling configuration
 export UPDATE_WATO_ASD_TOOLING=1 # Set to 0 if you don't want to update ASD tooling on remote hosts
 export SAVE_DOCKER_STATE_ON_EXIT=0 # Set to 1 if you want to save docker state on exit
-export USE_SAVED_DOCKER_STATE=1 # Set to 1 to use docker state management
+export CLEAN_SAVED_DOCKER_STATE=0 # Set to 1 to clean your docker state, do this is your docker is corrupted or too large
