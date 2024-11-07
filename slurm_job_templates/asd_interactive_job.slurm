@@ -53,7 +53,7 @@ save_docker_state() {
     trap - INT TERM
 }
 
-if [[ "$UPDATE_WATO_ASD_TOOLING" -eq 1 ]] && [[ -f "$DOCKER_STATE_PATH" ]]; then
+if [[ "$CLEAN_SAVED_DOCKER_STATE" -eq 1 ]] && [[ -f "$DOCKER_STATE_PATH" ]]; then
     rm -rf "$DOCKER_SESSION_DIR"
     echo -e "Docker state directory cleaned."
 fi
