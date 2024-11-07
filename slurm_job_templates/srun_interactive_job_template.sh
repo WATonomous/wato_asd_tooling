@@ -3,6 +3,7 @@
 sed -i 's/\r$//' $REMOTE_SLURM_JOB_SCRIPT
 
 export SAVE_DOCKER_STATE_ON_EXIT=${SAVE_DOCKER_STATE_ON_EXIT}
+export CLEAN_SAVED_DOCKER_STATE=${CLEAN_SAVED_DOCKER_STATE}
 
 # Run srun command
 /opt/slurm/bin/srun --cpus-per-task=${NUMBER_OF_CPUS} --mem=${MEMORY} \
