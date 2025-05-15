@@ -18,7 +18,6 @@ ssh_config="Host ${WATCLOUD_HOSTS[@]}
     Hostname %h.cluster.watonomous.ca
     User $username
     ForwardAgent Yes
-    ProxyJump $username@bastion.watonomous.ca
     IdentityFile $ssh_key_path
     IdentitiesOnly Yes"
 
