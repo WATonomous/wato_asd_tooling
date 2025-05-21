@@ -15,7 +15,7 @@ read -p "Enter your SSH private key path (e.g. ~/.ssh/id_rsa): " ssh_key_path
 
 # Generate the SSH configuration
 ssh_config="Host ${WATCLOUD_HOSTS[@]}
-    Hostname %h.cluster.watonomous.ca
+    Hostname %h.ext.watonomous.ca
     User $username
     ForwardAgent Yes
     IdentityFile $ssh_key_path
