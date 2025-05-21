@@ -5,7 +5,7 @@
 
 # Variables for SSH and remote execution
 export REMOTE_USER="your_watcloud_username"    # Your WATcloud Username
-export REMOTE_HOST="watcloud_remote_host"      # [tr-ubuntu3, derek3-ubuntu2]
+export REMOTE_HOST="watcloud_remote_host"      # [wato-login1, wato-login2]
 export SSH_KEY="path_to_private_key"           # Path to your local private key
 
 # SLURM job configuration

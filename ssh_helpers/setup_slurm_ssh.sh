@@ -15,7 +15,7 @@ if [ -f "$KEY_PATH" ]; then
     echo "Key file $KEY_PATH already exists."
 else
     echo "Key file $KEY_PATH does not exist. Copying your slurm key from the WATcloud server."
-    scp $username@tr-ubuntu3:/home/$username/.ssh/slurm_key.pub $KEY_PATH
+    scp $username@wato-login1:/home/$username/.ssh/slurm_key.pub $KEY_PATH
 fi
 
 # Generate SSH Config
@@ -33,7 +33,7 @@ ssh_config="Host asd-dev-session
     PreferredAuthentications publickey
     PubkeyAuthentication yes
     IdentityFile $ssh_key_path
-    ProxyCommand ssh tr-ubuntu3 \"nc \$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList | awk '{print \$1;}').cluster.watonomous.ca ${ssh_port}\""
+    ProxyCommand ssh wato-login1 \"nc \$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList | awk '{print \$1;}').cluster.watonomous.ca ${ssh_port}\""
 
 # Check if the system is either Linux or macOS
 if [[ "$(uname)" == "Darwin" || "$(expr substr $(uname -s) 1 5)" == "Linux" ]]; then
@@ -44,7 +44,7 @@ if [[ "$(uname)" == "Darwin" || "$(expr substr $(uname -s) 1 5)" == "Linux" ]]; 
         PreferredAuthentications publickey
         PubkeyAuthentication yes
         IdentityFile $ssh_key_path
-        ProxyCommand ssh tr-ubuntu3 \"nc \\\$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList | awk '{print \\\$1;}').cluster.watonomous.ca ${ssh_port}\""
+        ProxyCommand ssh wato-login1 \"nc \\\$(/opt/slurm/bin/squeue --user ${username} --name=wato_slurm_dev --states=R -h -O NodeList | awk '{print \\\$1;}').cluster.watonomous.ca ${ssh_port}\""
 fi
 
 # Display SSH configuration

@@ -35,8 +35,7 @@ Takes in your SSH private key path and adds it to the SSH Agent. To troubleshoot
 ## Generate SSH Configuration
 `ssh_helpers/generate_ssh_config.sh`
 
-Takes in your WATcloud username as well as a path to your SSH private key to generate an SSH Configuration to connect to all of our available machines on WATcloud.
-
-We do a proxyjump from the wato bastion to the specific host computer you want to connect to. The configuration also enable AgentForwarding so that you can you GitHub and other things inside the WATcloud machines. 
+Takes in your WATcloud username as well as a path to your SSH private key to generate an SSH Configuration to connect to all of our available machines on WATcloud. The configuration also enables AgentForwarding so that you can you GitHub and other things inside the WATcloud machines. 
+<!-- We do a proxyjump from the wato bastion to the specific host computer you want to connect to. The configuration also enable AgentForwarding so that you can you GitHub and other things inside the WATcloud machines.  -->
 
 Agent forwarding will not work properly unless if you [add your key properly](#configure-agent-forwarding). 
