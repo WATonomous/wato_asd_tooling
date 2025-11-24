@@ -36,11 +36,11 @@ if [ $? -eq 1 ] || [ "$UPDATE_WATO_ASD_TOOLING" -eq 1 ]; then
     echo "Copying asd_interactive_job.slurm to the remote machine..."
     sed -i 's/\r$//' "$LOCAL_SLURM_JOB_SCRIPT"
     scp -p -i "$SSH_KEY" "$LOCAL_SLURM_JOB_SCRIPT" "$REMOTE_USER@$REMOTE_HOST:~/slurm_tooling/"
-    
+
     echo "Copying the launch script to the remote machine..."
     TMP_JOB_LAUNCH_SCRIPT=$(mktemp)
     chmod +x "$TMP_JOB_LAUNCH_SCRIPT"
-    envsubst < "$LOCAL_JOB_LAUNCH_TEMPLATE" > "$TMP_JOB_LAUNCH_SCRIPT"
+    envsubst '${REMOTE_SLURM_JOB_SCRIPT} ${SAVE_DOCKER_STATE_ON_EXIT} ${CLEAN_SAVED_DOCKER_STATE} ${GPU_TYPE} ${TMP_DISK_SIZE} ${VRAM} ${NUMBER_OF_CPUS} ${MEMORY} ${USAGE_TIME}' < "$LOCAL_JOB_LAUNCH_TEMPLATE" > "$TMP_JOB_LAUNCH_SCRIPT"
     sed -i 's/\r$//' "$TMP_JOB_LAUNCH_SCRIPT"
     scp -p -i "$SSH_KEY" "$TMP_JOB_LAUNCH_SCRIPT" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_JOB_LAUNCH_SCRIPT"
 fi
