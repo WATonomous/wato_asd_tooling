@@ -27,7 +27,7 @@ cleanup() {
 trap cleanup SIGINT
 
 # Load docker session if exists, create file in wato-drive2 otherwise
-DOCKER_SESSION_DIR="/mnt/wato-drive2/slurm-docker-sessions/$(id -u)/"
+DOCKER_SESSION_DIR="/mnt/wato-drive/slurm-docker-sessions/$(id -u)/"
 DOCKER_STATE_FILE="slurm-docker-state.tar.zst"
 DOCKER_STATE_PATH="${DOCKER_SESSION_DIR}/${DOCKER_STATE_FILE}"
 

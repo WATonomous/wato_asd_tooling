@@ -14,6 +14,7 @@ export MEMORY=16G              # Amount of RAM to use
 export USAGE_TIME="6:00:00"    # How long you want to run the session for
 export TMP_DISK_SIZE=10240     # How much temporary storage you want [in MiB]
 export VRAM=0                  # How much GPU VRAM you want [in MiB]
+export GPU_TYPE=""     # Optional GPU type (e.g., "rtx_3090"). Leave empty to use any available GPU
 
 # SLURM tooling configuration
 export UPDATE_WATO_ASD_TOOLING=1 # Set to 0 if you don't want to update ASD tooling on remote hosts
