@@ -14,7 +14,6 @@ export MEMORY=64G              # Amount of RAM to use
 export USAGE_TIME="6:00:00"    # How long you want to run the session for
 export TMP_DISK_SIZE=102400     # How much temporary storage you want [in MiB]
 export VRAM=24000                  # How much GPU VRAM you want [in MiB]
-
 # SLURM tooling configuration
 export UPDATE_WATO_ASD_TOOLING=0 # Set to 0 if you don't want to update ASD tooling on remote hosts
 export SAVE_DOCKER_STATE_ON_EXIT=1 # Set to 1 if you want to save docker state on exit
