@@ -54,6 +54,14 @@ first connection also installs VS Code's server in your cluster home, which take
 Then open a folder (for example `~/wato_monorepo`) and a terminal. `docker` works there; the
 docker daemon may need a few more seconds after the session starts.
 
+Connecting does not start a new session within 3 hours after your last one ended by its time
+limit, by `asd-dev stop`, or by a failure. VS Code reconnects on its own for hours after a
+connection drops, and reopens remote windows when it starts, so without this rule a window left
+open would book one job after another. VS Code then reports that it could not connect, and its
+log says why the last session ended. Start a new one yourself with `./asd-dev start` (it opens
+VS Code when the session is ready). A session that stopped because nothing was connected does
+not count: connecting again starts a new one right away.
+
 If the cluster is busy, VS Code reports that it could not connect. Its log (Output panel,
 "Remote - SSH") then has a line starting with `asd-dev:` that says why, for example
 `job 123 is waiting for free resources`. The job stays queued; click **Retry** later, or run
@@ -64,7 +72,8 @@ session is ready.
 
 A session stops by itself 60 minutes after the last connection to it closes (closing VS Code,
 or your laptop going to sleep), or when its time limit is reached. A running `tmux` or `screen`
-keeps it alive while you are disconnected.
+keeps it alive while you are disconnected. A VS Code window that stays open keeps the session
+running until its time limit, so close the window when you are done.
 
 To stop it now, run `asd-dev stop` in the VS Code terminal, or `./asd-dev stop` on your computer.
 Stopping saves your docker images and containers; the next session restores them. Saved docker
@@ -130,6 +139,7 @@ look for lines starting with `asd-dev:`. Most problems are one of these:
 | `.asd-dev/bin/asd-dev: No such file or directory` | The helper is missing from your cluster home. Run setup again. |
 | `Host key verification failed` | The session host key changed (for example `~/.asd-dev` was deleted). Run setup again. |
 | `Could not resolve hostname asd-dev-session` | Your SSH config has no asd-dev entries. Run setup again; on Windows run `setup.cmd`. |
+| `asd-dev: ERROR: not starting a new ... session by itself so soon` | Your last session ended less than 3 hours ago (the line above says how). Run `./asd-dev start`. |
 | `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `asd-dev logs`. |
 
 If docker misbehaves after a restore, start once without the saved state
