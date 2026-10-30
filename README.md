@@ -59,6 +59,10 @@ first connection with a new VS Code version also installs VS Code's server in yo
 Then open a folder (for example `~/wato_monorepo`) and a terminal. `docker` works there; the
 docker daemon may need a few more seconds after the session starts.
 
+> **If VS Code says "An unknown error occurred"** (or any other connection error), the reason is
+> in its log: View > Output, choose **Remote - SSH** in the list on the right, and look for lines
+> starting with `asd-dev:`. The two common cases follow.
+
 Connecting does not start a new session within 3 hours after your last one ended by its time
 limit, by `asd-dev stop`, or by a failure. VS Code reconnects on its own for hours after a
 connection drops, and reopens remote windows when it starts, so without this rule a window left
@@ -134,12 +138,12 @@ On your computer (`.\asd-dev.cmd` on Windows) or, without the `./`, in a session
 
 ## Troubleshooting
 
-When VS Code cannot connect, its dialog often says only "An unknown error occurred". Open the
-Output panel (View > Output), pick **Remote - SSH**, and look for lines starting with `asd-dev:`;
-they say what happened. Most problems are one of these:
+When VS Code cannot connect, its dialog often says only "An unknown error occurred". The lines
+that explain it are in its log. Most problems are one of these:
 
 | You see | What to do |
 | --- | --- |
+| VS Code: "An unknown error occurred. Please consult the log" | View > Output, choose **Remote - SSH**, and read the lines starting with `asd-dev:` (and the rows below). |
 | `Connection timed out` (for `wato-login1.ext.watonomous.ca`) | You are off campus without the UW VPN. Connect to the VPN and retry. |
 | `Permission denied (publickey)` | Wrong username or a key that is not registered. Run setup again; it checks both. |
 | `asd-dev: job N is waiting ...` | The cluster is busy. Click Retry later, or run `./asd-dev start` to wait for it. |
@@ -147,7 +151,7 @@ they say what happened. Most problems are one of these:
 | `.asd-dev/bin/asd-dev: No such file or directory` | The helper is missing from your cluster home. Run setup again. |
 | `Host key verification failed` | The session host key changed (for example `~/.asd-dev` was deleted). Run setup again. |
 | `Could not resolve hostname asd-dev-session` | Your SSH config has no asd-dev entries. Run setup again; on Windows run `setup.cmd`. |
-| `asd-dev: ERROR: not starting a new ... session by itself so soon` | Your last session ended less than 3 hours ago (the line above says how). Run `./asd-dev start`. |
+| `asd-dev: ERROR: no session started. Run ./asd-dev start ...` | Your last session ended less than 3 hours ago (the next lines say how). Run `./asd-dev start`. |
 | `Disk quota exceeded` in your home | VS Code keeps its server (about 1.3 GB per VS Code version) in `~/.vscode-server`, in your 20 GiB home. Delete old versions there. |
 | `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `asd-dev logs`. |
 

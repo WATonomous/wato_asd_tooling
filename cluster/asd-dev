@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.12
+ASD_DEV_VERSION=2.0.0-beta.13
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=12
+ASD_DEV_SERIAL=13
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -411,9 +411,10 @@ cmd_proxy() {
     deadline=$((SECONDS + CFG[connect_wait]))
     take_lock
     if ! find_session_job "$name"; then
-        explain_last_end "$name"
+        last_end "$name" || true
         if [[ ${CFG[auto_start]} != yes ]]; then
             release_lock
+            explain_last_end "$name"
             die "you have no '$name' session running, so there is nothing to connect to." \
                 "Start one on your laptop with: ./$(start_cmd "$name")   (it opens VS Code when ready)" \
                 "or let VS Code start it for you: asd-dev config auto_start=yes"
@@ -422,12 +423,13 @@ cmd_proxy() {
         # this, a session ending by time limit or stop would be followed by job after job.
         if [[ -n $L_ID && $L_KIND != idle ]] && ((L_AGE < CFG[auto_start_cooldown])); then
             release_lock
-            die "not starting a new '$name' session by itself so soon after the last one ended:" \
-                "VS Code keeps reconnecting on its own, and each reconnect would book another job." \
-                "Start one yourself on your laptop: ./$(start_cmd "$name")   (it opens VS Code when ready)," \
-                "or on the login node: $(start_cmd "$name"), then click Retry. Connecting starts sessions by" \
-                "itself again ${CFG[auto_start_cooldown]} min after a session ends (asd-dev config auto_start_cooldown=...)."
+            # The first line must stand alone: users scanning VS Code's log may read nothing else.
+            die "no session started. Run ./$(start_cmd "$name") on your laptop (it opens VS Code), then Retry." \
+                "Why: your last '$name' session ended $(ago "$L_AGE") ($L_TEXT), and VS Code keeps" \
+                "reconnecting on its own after a session ends, so connecting does not start a new one" \
+                "for ${CFG[auto_start_cooldown]} min (asd-dev config auto_start_cooldown=...). On the login node: $(start_cmd "$name")"
         fi
+        explain_last_end "$name"
         submit_session "$name" vscode
         say "no '$name' session was running, so I started one: job $J_ID ($(describe_resources))."
         say "It stops by itself after ${CFG[idle_timeout]} min with nothing connected; stop it sooner with: $(stop_cmd "$name")"
