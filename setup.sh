@@ -165,7 +165,8 @@ make_block() {
     cat <<EOF
 $BLOCK_BEGIN
 # Written by wato_asd_tooling's setup.sh. Run it again to change this block; edits here are lost.
-Host asd-dev-login
+# The login node, used as the hop; the "*" keeps VS Code from listing it (VS Code must not run there).
+Host asd-dev-login*
     HostName $LOGIN_HOSTNAME
     User $CLUSTER_USER
     IdentityFile $identity
@@ -261,7 +262,7 @@ previous_value() { # previous_value CONFIG KEYWORD: value from our block's asd-d
     [[ -f $1 ]] || return 0
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v k="$2" '
         $0 == b { inb = 1; next } $0 == e { inb = 0 }
-        inb && tolower($1) == "host" { inlogin = ($2 == "asd-dev-login") }
+        inb && tolower($1) == "host" { inlogin = ($2 ~ /^asd-dev-login/) }
         inb && inlogin && tolower($1) == k { $1 = ""; sub(/^ +/, ""); gsub(/"/, ""); print; exit }' "$1"
 }
 

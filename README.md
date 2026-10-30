@@ -32,9 +32,10 @@ Open a terminal in the `wato_asd_tooling` folder and run the line for your syste
 | Windows with Git Bash | `./setup.sh` |
 
 Setup asks for your cluster username and key, checks that you can log in, installs a small
-helper in your cluster home (`~/.asd-dev`), and adds the hosts `asd-dev-session` and
-`asd-dev-login` to the top of your SSH config (`~/.ssh/config`; a backup of the old file is kept
-next to it). Run it again at any time to change the username or key.
+helper in your cluster home (`~/.asd-dev`), and adds the hosts `asd-dev-session` (your
+session) and `asd-dev-login` (the login node it connects through) to the top of your SSH config
+(`~/.ssh/config`; a backup of the old file is kept next to it). Run it again at any time to
+change the username or key.
 
 ## 2. Connect
 

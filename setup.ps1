@@ -125,7 +125,8 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
     $lines = @(
         $BlockBegin,
         "# Written by wato_asd_tooling's setup.sh. Run it again to change this block; edits here are lost.",
-        'Host asd-dev-login',
+        '# The login node, used as the hop; the "*" keeps VS Code from listing it (VS Code must not run there).',
+        'Host asd-dev-login*',
         "    HostName $script:LoginHostName",
         "    User $script:ClusterUser",
         "    IdentityFile $id",
@@ -227,7 +228,7 @@ function Previous-Value([string]$config, [string]$keyword) {
         if (-not $inBlock) { continue }
         $parts = $l.Trim() -split '\s+', 2
         if ($parts.Count -lt 2) { continue }
-        if ($parts[0] -eq 'Host') { $inLogin = ($parts[1] -eq 'asd-dev-login'); continue }
+        if ($parts[0] -eq 'Host') { $inLogin = $parts[1].StartsWith('asd-dev-login'); continue }
         if ($inLogin -and $parts[0] -eq $keyword) { return $parts[1].Trim('"') }
     }
     return ''
