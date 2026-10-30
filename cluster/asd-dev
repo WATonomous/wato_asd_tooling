@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.13
+ASD_DEV_VERSION=2.0.0-rc.1
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=13
+ASD_DEV_SERIAL=14
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -25,6 +25,9 @@ else
     esac
 fi
 CONFIG="${ASD_DEV_CONFIG:-$ROOT/config}" # override for tests
+# Jobs carry the install in their comment, so two installs (setup --cluster-dir) never see each other's.
+INSTALL_ID=$(basename "$ROOT")
+JOB_COMMENT="asd-dev:$INSTALL_ID"
 SESSIONS="$ROOT/sessions"
 LOGS="$ROOT/logs"
 HOSTKEY="$ROOT/ssh_host_ed25519_key"
@@ -112,9 +115,18 @@ load_config() {
 write_config_value() {
     local key=$1 value=$2 tmp
     tmp=$(mktemp "$CONFIG.XXXXXX")
+    # Keeps the line's comment, which explains the setting.
     awk -v k="$key" -v v="$value" '
         BEGIN { done = 0 }
-        $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { if (!done) print k "=" v; done = 1; next }
+        $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
+            if (!done) {
+                c = index($0, "#"); line = k "=" v
+                if (c) { comment = substr($0, c); pad = 22 - length(line); if (pad < 1) pad = 1
+                         line = line sprintf("%" pad "s", "") comment }
+                print line
+            }
+            done = 1; next
+        }
         { print }
         END { if (!done) print k "=" v }' "$CONFIG" >"$tmp"
     mv -f "$tmp" "$CONFIG"
@@ -189,14 +201,28 @@ name_from_job_name() { if [[ $1 == "$JOB_PREFIX" ]]; then printf 'default'; else
 
 SQ_FORMAT='%i|%T|%N|%r|%k|%L|%S|%j'
 
-# Prints the user's active jobs for session $1, newest first, as SQ_FORMAT lines.
+# The default install also owns jobs of earlier versions (comment "asd-dev") and of the old
+# start_interactive_session.sh (no comment), which other installs must not touch.
+is_default_install() { [[ $INSTALL_ID == .asd-dev ]]; }
+is_legacy_comment() { [[ -z $1 || $1 == "(null)" ]]; }
+
+# Keeps the SQ_FORMAT lines (stdin) of jobs that belong to this install.
+own_jobs_filter() {
+    local dflt=no
+    is_default_install && dflt=yes
+    awk -F'|' -v mine="$JOB_COMMENT" -v dflt="$dflt" '
+        NF >= 8 && $2 != "COMPLETING" && $2 != "COMPLETED" &&
+        ($5 == mine || (dflt == "yes" && ($5 == "asd-dev" || $5 == "(null)" || $5 == "")))'
+}
+
+# Prints this install's active jobs for session $1, oldest first, as SQ_FORMAT lines.
 session_jobs() {
     local out
-    if ! out=$(squeue --me -h --name="$(job_name "$1")" --sort=-i -o "$SQ_FORMAT" 2>&1 </dev/null); then
+    if ! out=$(squeue --me -h --name="$(job_name "$1")" --sort=i -o "$SQ_FORMAT" 2>&1 </dev/null); then
         die "could not ask SLURM for your jobs (squeue failed):" "$out" \
             "The SLURM controller may be down; check https://status.watonomous.ca"
     fi
-    printf '%s\n' "$out" | awk -F'|' 'NF >= 8 && $2 != "COMPLETING" && $2 != "COMPLETED"'
+    printf '%s\n' "$out" | own_jobs_filter
 }
 
 # Sets J_* globals from a line that starts with the SQ_FORMAT fields.
@@ -204,7 +230,8 @@ parse_job() {
     IFS='|' read -r J_ID J_STATE J_NODE J_REASON J_COMMENT J_LEFT J_START J_NAME _ <<<"$1"
 }
 
-# Picks the newest active job of session $1 into J_*; returns 1 if there is none.
+# Picks the oldest active job of session $1 into J_*; returns 1 if there is none.
+# Oldest, so every proxy agrees on the same job when duplicates exist (see dedupe_after_submit).
 find_session_job() {
     local name=$1 jobs count
     jobs=$(session_jobs "$name") || exit 1
@@ -212,7 +239,7 @@ find_session_job() {
     count=$(printf '%s\n' "$jobs" | wc -l)
     parse_job "$(printf '%s\n' "$jobs" | head -n1)"
     if ((count > 1)); then
-        say "WARNING: you have $count '$name' sessions ($(printf '%s\n' "$jobs" | cut -d'|' -f1 | tr '\n' ' ')); using the newest, job $J_ID."
+        say "WARNING: you have $count '$name' sessions ($(printf '%s\n' "$jobs" | cut -d'|' -f1 | tr '\n' ' ')); using the oldest, job $J_ID."
         say "         Stop the others with: asd-dev stop --job <id>"
     fi
 }
@@ -264,37 +291,67 @@ read_state() {
     [[ -n $S_PORT && -n $S_NODE ]]
 }
 
-# Finds how the last session $1 (or, without $1, any session) ended in the last 3 days.
-# Sets L_ID L_NAME L_KIND (idle|stop|timeout|cancel|fail|ending) L_TEXT L_WHEN L_AGE (minutes); returns 1 if none.
+is_stopping() { [[ -e $SESSIONS/$1.stopping || -e $SESSIONS/$1.stop ]]; }
+
+# Writes how session NAME's job ended (or "running" at its start) to sessions/last-NAME.
+# The cooldown reads only these records, so jobs of other installs or of the old tooling never count.
+write_end_record() { # write_end_record NAME JOB REASON KIND
+    local tmp
+    mkdir -p "$SESSIONS"
+    tmp=$(mktemp "$SESSIONS/.last-$1.XXXXXX")
+    printf 'job=%s\nended_epoch=%s\nreason=%s\nkind=%s\n' "$2" "$(date +%s)" "$3" "$4" >"$tmp"
+    mv -f "$tmp" "$SESSIONS/last-$1"
+}
+
+# Reads how this install's last session $1 (or, without $1, its most recent one) ended.
+# Sets L_ID L_NAME L_KIND (idle|stop|cancel|timeout|fail|ending) L_TEXT L_WHEN L_AGE (minutes).
+# Returns 1 if there is no record.
 last_end() {
-    local name=${1:-} line jobname state end end_s kind="" reason=""
+    local name=${1:-} f key value epoch="" state end
     L_ID="" L_NAME="" L_KIND="" L_TEXT="" L_WHEN="" L_AGE=0
-    line=$(sacct -X -n -P -S now-3days -o JobID,JobName,State,End 2>/dev/null </dev/null |
-        awk -F'|' -v p="$JOB_PREFIX" -v want="${name:+$(job_name "$name")}" '
-            $1 ~ /^[0-9]+$/ && $3 !~ /^PENDING/ && (want == "" ? ($2 == p || index($2, p "-") == 1) : $2 == want)' |
-        tail -n1 || true)
-    [[ -n $line ]] || return 1
-    IFS='|' read -r L_ID jobname state end <<<"$line"
-    L_NAME=$(name_from_job_name "$jobname")
-    if [[ -f $SESSIONS/last-$L_NAME ]] && grep -q "^job=$L_ID\$" "$SESSIONS/last-$L_NAME"; then
-        reason=$(sed -n 's/^reason=//p' "$SESSIONS/last-$L_NAME")
-        kind=$(sed -n 's/^kind=//p' "$SESSIONS/last-$L_NAME")
+    if [[ -n $name ]]; then
+        f=$SESSIONS/last-$name
+    else
+        # shellcheck disable=SC2012 # our own file names, newest first
+        f=$(ls -t "$SESSIONS"/last-* 2>/dev/null | head -n1 || true)
     fi
-    case $state in
-        COMPLETED*) L_KIND=${kind:-stop} L_TEXT=${reason:-"it stopped"} ;;
-        TIMEOUT*) L_KIND=timeout L_TEXT="it reached its time limit" ;;
-        CANCELLED*) L_KIND=cancel L_TEXT="it was cancelled (asd-dev stop --now or scancel)" ;;
-        OUT_OF_ME*) L_KIND=fail L_TEXT="it ran out of memory (ask for more: asd-dev start --mem 32G)" ;;
-        NODE_FAIL*) L_KIND=fail L_TEXT="its node failed" ;;
-        PREEMPTED*) L_KIND=fail L_TEXT="SLURM preempted it" ;;
-        RUNNING* | COMPLETING*) L_KIND=ending L_TEXT="it is shutting down right now" ;;
-        *) L_KIND=fail L_TEXT="it ended with state $state (see: asd-dev logs $L_NAME)" ;;
-    esac
-    if end_s=$(date -u -d "$end" +%s 2>/dev/null); then
-        L_WHEN="at $(date -u -d "$end" '+%H:%M') UTC"
-        L_AGE=$((($(date +%s) - end_s) / 60))
+    [[ -n $f && -f $f ]] || return 1
+    L_NAME=${f##*/last-}
+    while IFS='=' read -r key value; do
+        case $key in
+            job) L_ID=$value ;;
+            ended_epoch) epoch=$value ;;
+            ended) epoch=${epoch:-$(date -d "$value" +%s 2>/dev/null || true)} ;;
+            reason) L_TEXT=$value ;;
+            kind) L_KIND=$value ;;
+        esac
+    done <"$f"
+    [[ $L_ID =~ ^[0-9]+$ ]] || return 1
+    # "running" (written at start) and "slurm" (SIGTERM) mean SLURM ended it; ask sacct how.
+    if [[ $L_KIND == running || $L_KIND == slurm ]]; then
+        IFS='|' read -r state end < <(sacct -j "$L_ID" -X -n -P -o State,End 2>/dev/null </dev/null || true)
+        case ${state:-} in
+            TIMEOUT*) L_KIND=timeout L_TEXT="it reached its time limit" ;;
+            CANCELLED*) L_KIND=cancel L_TEXT="it was cancelled (asd-dev stop --now or scancel)" ;;
+            OUT_OF_ME*) L_KIND=fail L_TEXT="it ran out of memory (ask for more: asd-dev start --mem 32G)" ;;
+            NODE_FAIL*) L_KIND=fail L_TEXT="its node failed" ;;
+            RUNNING* | COMPLETING* | PENDING* | "") L_KIND=ending L_TEXT="it is still shutting down" ;;
+            *) L_KIND=fail L_TEXT="it ended unexpectedly ($state; see: asd-dev logs $L_NAME)" ;;
+        esac
+        if [[ $L_KIND != ending && -n ${end:-} ]]; then epoch=$(date -d "$end" +%s 2>/dev/null || echo "$epoch"); fi
+        [[ $L_KIND == ending ]] && epoch=$(date +%s)
+    fi
+    if [[ $epoch =~ ^[0-9]+$ ]]; then
+        L_WHEN="at $(date -u -d "@$epoch" '+%H:%M') UTC"
+        L_AGE=$((($(date +%s) - epoch) / 60))
     fi
 }
+
+# True while the cooldown after session $1's last end applies (set by last_end).
+in_cooldown() { [[ -n $L_ID && $L_KIND != idle ]] && ((L_AGE < CFG[auto_start_cooldown])); }
+
+# shellcheck disable=SC2088 # printed for the user to type
+login_cmd() { printf '~/%s/bin/%s' "$INSTALL_ID" "$1"; }
 
 ago() { if (($1 < 1)); then echo "just now"; elif (($1 < 120)); then echo "$1 min ago"; else echo "$(($1 / 60)) h ago"; fi; }
 
@@ -314,7 +371,7 @@ submit_session() {
     args=(
         --parsable
         --job-name="$(job_name "$name")"
-        --comment=asd-dev
+        --comment="$JOB_COMMENT"
         --chdir="$HOME"
         --output="$LOGS/%j.log"
         --cpus-per-task="${CFG[cpus]}"
@@ -325,13 +382,34 @@ submit_session() {
         --export=ALL,ASD_DEV_ROOT="$ROOT"
     )
     [[ -n ${CFG[partition]} ]] && args+=(--partition="${CFG[partition]}")
-    if ! out=$(sbatch "${args[@]}" "$ROOT/bin/asd-dev" _job "$name" \
+    # --export=ALL would carry GPU and SLURM variables of a session this runs in into the new job.
+    local v unset=()
+    for v in $(compgen -v SLURM_) CUDA_VISIBLE_DEVICES GPU_DEVICE_ORDINAL ROCR_VISIBLE_DEVICES ASD_DEV_SESSION; do
+        [[ $v == SLURM_CONF ]] || unset+=(-u "$v")
+    done
+    if ! out=$(env "${unset[@]}" sbatch "${args[@]}" "$ROOT/bin/asd-dev" _job "$name" \
         "idle_timeout=${CFG[idle_timeout]}" "docker_state=${CFG[docker_state]}" "started_by=$started_by" 2>&1 </dev/null); then
         die "SLURM rejected the session job:" "$out" "Requested: $(describe_resources)"
     fi
     J_ID=$(printf '%s\n' "$out" | grep -Eo '^[0-9]+' | tail -n1)
     [[ -n $J_ID ]] || die "could not read the job id from sbatch output:" "$out"
-    J_STATE=PENDING J_NODE="" J_REASON=None J_COMMENT=asd-dev J_NAME=$(job_name "$name")
+    J_STATE=PENDING J_NODE="" J_REASON=None J_COMMENT=$JOB_COMMENT J_NAME=$(job_name "$name") J_DEDUPED=no
+    dedupe_after_submit "$name"
+}
+
+# The lock only serializes proxies on one login node. If a proxy on another node (or computer)
+# submitted the same session at the same moment, the job with the lower id wins: the later
+# submitter always sees the earlier job, cancels its own and uses that one.
+dedupe_after_submit() {
+    local name=$1 jobs oldest
+    jobs=$(session_jobs "$name") || return 0
+    oldest=$(printf '%s\n' "$jobs" | head -n1 | cut -d'|' -f1)
+    if [[ -n $oldest && $oldest != "$J_ID" ]]; then
+        scancel "$J_ID" </dev/null || true
+        say "another connection started '$name' at the same moment (job $oldest); using it and cancelling job $J_ID."
+        parse_job "$(printf '%s\n' "$jobs" | head -n1)"
+        J_DEDUPED=yes
+    fi
 }
 
 # Waits until session job J_ID accepts ssh connections, printing progress.
@@ -353,11 +431,16 @@ wait_ready() {
                 ;;
             RUNNING)
                 running_since=${running_since:-$SECONDS}
+                if is_stopping "$J_ID"; then
+                    die "job $J_ID is stopping (it saves docker state first if that is on), so there is nothing to connect to." \
+                        "Connect again once it has ended, or run on your laptop: ./$(start_cmd "$(name_from_job_name "$J_NAME")")" \
+                        "(that waits for the old session to end and then starts a new one)."
+                fi
                 # The job writes its state file only once sshd listens, so no probe is needed
                 # (a probe would also leave "Connection closed" noise in the session log).
                 if read_state "$J_ID"; then
                     return 0
-                elif [[ $J_COMMENT != asd-dev ]]; then
+                elif is_legacy_comment "$J_COMMENT"; then
                     # Started by the old start_interactive_session.sh: sshd on the fixed port, no state file.
                     S_NODE=$J_NODE S_ADDR="" S_PORT=$(($(id -u) * 20 - 1))
                     if nc -z -w 3 "$S_NODE.$CLUSTER_DOMAIN" "$S_PORT" </dev/null 2>/dev/null; then
@@ -421,18 +504,21 @@ cmd_proxy() {
         fi
         # VS Code retries a lost connection for hours and reopens remote windows at launch; without
         # this, a session ending by time limit or stop would be followed by job after job.
-        if [[ -n $L_ID && $L_KIND != idle ]] && ((L_AGE < CFG[auto_start_cooldown])); then
+        if in_cooldown; then
             release_lock
             # The first line must stand alone: users scanning VS Code's log may read nothing else.
             die "no session started. Run ./$(start_cmd "$name") on your laptop (it opens VS Code), then Retry." \
                 "Why: your last '$name' session ended $(ago "$L_AGE") ($L_TEXT), and VS Code keeps" \
                 "reconnecting on its own after a session ends, so connecting does not start a new one" \
-                "for ${CFG[auto_start_cooldown]} min (asd-dev config auto_start_cooldown=...). On the login node: $(start_cmd "$name")"
+                "for ${CFG[auto_start_cooldown]} min (asd-dev config auto_start_cooldown=...)." \
+                "On the login node instead: $(login_cmd "$(start_cmd "$name")")"
         fi
         explain_last_end "$name"
         submit_session "$name" vscode
-        say "no '$name' session was running, so I started one: job $J_ID ($(describe_resources))."
-        say "It stops by itself after ${CFG[idle_timeout]} min with nothing connected; stop it sooner with: $(stop_cmd "$name")"
+        if [[ $J_DEDUPED == no ]]; then
+            say "no '$name' session was running, so I started one: job $J_ID ($(describe_resources))."
+            say "It stops by itself after ${CFG[idle_timeout]} min with nothing connected; stop it sooner with: $(stop_cmd "$name")"
+        fi
     fi
     release_lock
     if ! wait_ready "$deadline"; then
@@ -483,11 +569,29 @@ parse_session_flags() {
     check_name "$NAME"
 }
 
+# Waits until job $1 has left the queue.
+wait_job_gone() {
+    local id=$1 waited=0
+    while squeue -h -j "$id" -t PD,CF,R,CG,S -o %T 2>/dev/null </dev/null | grep -q .; do
+        sleep 3
+        waited=$((waited + 3))
+        if ((waited % 60 == 0)); then say "still stopping ($waited s)..."; fi
+        if ((waited >= 900)); then return 1; fi
+    done
+}
+
 cmd_start() {
     parse_session_flags "$@"
     load_config
     if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
     take_lock
+    if find_session_job "$NAME" && [[ $J_STATE == RUNNING ]] && is_stopping "$J_ID"; then
+        release_lock
+        say "your '$NAME' session (job $J_ID) is stopping (saving docker state first if that is on); waiting for it to end..."
+        wait_job_gone "$J_ID" || die "job $J_ID did not end within 15 minutes; cancel it with: asd-dev stop --job $J_ID --now"
+        take_lock
+    fi
+    J_DEDUPED=no
     if find_session_job "$NAME"; then
         release_lock
         say "your '$NAME' session already exists (job $J_ID, $J_STATE${J_NODE:+ on $J_NODE})."
@@ -511,15 +615,20 @@ cmd_start() {
 # ---------------------------------------------------------------- commands: stop, status, logs
 
 stop_job() {
-    local id=$1 state=$2 node=$3 comment=$4 waited=0 hint
-    hint="Connecting from VS Code will not start a new session for ${CFG[auto_start_cooldown]} min; for one sooner: $(start_cmd "$(name_from_job_name "$J_NAME")")"
+    local id=$1 state=$2 node=$3 comment=$4 name hint
+    name=$(name_from_job_name "$J_NAME")
+    hint="Connecting from VS Code will not start a new session for ${CFG[auto_start_cooldown]} min; for one sooner: $(start_cmd "$name")"
     # Jobs of the old start_interactive_session.sh do not watch for the stop file.
-    if [[ $state != RUNNING || $FLAG_NOW == yes || $comment != asd-dev ]]; then
+    if [[ $state != RUNNING || $FLAG_NOW == yes ]] || is_legacy_comment "$comment"; then
         scancel "$id" </dev/null
-        say "cancelled job $id."
-        if [[ $state == RUNNING ]]; then
-            say "$hint"
+        if [[ $state != RUNNING ]]; then
+            # It never ran, so it wrote no record; without one the cooldown would not apply.
+            write_end_record "$name" "$id" "it was cancelled before it started" cancel
+            say "cancelled job $id (it had not started)."
+        else
+            say "cancelled job $id."
         fi
+        say "$hint"
         return
     fi
     mkdir -p "$SESSIONS"
@@ -531,16 +640,11 @@ stop_job() {
     fi
     say "stopping job $id on $node (saving docker state first if enabled; this can take a few minutes)..."
     say "$hint"
-    while squeue -h -j "$id" -t PD,CF,R,CG,S -o %T 2>/dev/null </dev/null | grep -q .; do
-        sleep 3
-        waited=$((waited + 3))
-        if ((waited % 60 == 0)); then say "still stopping ($waited s)..."; fi
-        if ((waited >= 900)); then
-            say "job $id did not stop within 15 minutes; cancelling it."
-            scancel "$id" </dev/null
-            return
-        fi
-    done
+    if ! wait_job_gone "$id"; then
+        say "job $id did not stop within 15 minutes; cancelling it."
+        scancel "$id" </dev/null
+        return
+    fi
     say "job $id stopped."
 }
 
@@ -551,6 +655,9 @@ cmd_stop() {
     if [[ -n $FLAG_JOB ]]; then
         line=$(squeue --me -h -j "$FLAG_JOB" -o "$SQ_FORMAT" 2>/dev/null </dev/null || true)
         [[ -n $line ]] || die "job $FLAG_JOB is not one of your active jobs."
+        [[ -n $(printf '%s\n' "$line" | own_jobs_filter) ]] ||
+            die "job $FLAG_JOB is not a session of this install ($ROOT)." \
+                "Stop it with the install that started it, or with scancel $FLAG_JOB."
         parse_job "$line"
         [[ $J_NAME == "$JOB_PREFIX"* ]] || die "job $FLAG_JOB ($J_NAME) is not an asd-dev session; use scancel for other jobs."
         stop_job "$J_ID" "$J_STATE" "$J_NODE" "$J_COMMENT"
@@ -572,16 +679,36 @@ cmd_stop() {
 }
 
 all_session_jobs() {
-    squeue --me -h --sort=-i -o "$SQ_FORMAT|%C|%m|%b" </dev/null |
-        awk -F'|' -v p="$JOB_PREFIX" '$8 == p || index($8, p "-") == 1'
+    squeue --me -h --sort=i -o "$SQ_FORMAT|%C|%m|%b" </dev/null |
+        awk -F'|' -v p="$JOB_PREFIX" '$8 == p || index($8, p "-") == 1' | own_jobs_filter
+}
+
+# Removes per-job files of jobs that are no longer active (left behind by hard kills).
+cleanup_stale() {
+    local active f id
+    active=" $(all_session_jobs | cut -d'|' -f1 | tr '\n' ' ') "
+    for f in "$SESSIONS"/*.env "$SESSIONS"/*.seen "$SESSIONS"/*.stop "$SESSIONS"/*.stopping; do
+        [[ -e $f ]] || continue
+        id=${f##*/}
+        id=${id%%.*}
+        [[ $id =~ ^[0-9]+$ && $active != *" $id "* ]] && rm -f "$f"
+    done
+    return 0
 }
 
 cmd_status() {
     local lines line cpus mem gres name
+    load_config
+    cleanup_stale
     lines=$(all_session_jobs)
     if [[ -z $lines ]]; then
-        say "no session is running. Start one: asd-dev start   (or just connect from VS Code)"
-        explain_last_end
+        if last_end && in_cooldown; then
+            say "no session is running. Your last '$L_NAME' session ended $(ago "$L_AGE") ($L_TEXT), so for"
+            say "${CFG[auto_start_cooldown]} min after that connecting from VS Code does not start one. Start one: $(start_cmd "$L_NAME")"
+        else
+            say "no session is running. Start one: asd-dev start   (or just connect from VS Code)"
+            explain_last_end
+        fi
         return 0
     fi
     printf '%-10s %-8s %-10s %-14s %-12s %s\n' SESSION JOB STATE NODE TIME_LEFT RESOURCES >&2
@@ -594,6 +721,7 @@ cmd_status() {
         if [[ $J_STATE == PENDING ]]; then say "  job $J_ID is $(explain_reason "$J_REASON" || true)"; fi
     done <<<"$lines"
     say "Connect: VS Code > Remote Explorer > SSH > asd-dev-session (or asd-dev-session-<name>). Stop: asd-dev stop [name]"
+    is_default_install || say "(sessions of the install in $ROOT only)"
 }
 
 cmd_logs() {
@@ -629,7 +757,8 @@ cmd_config() {
 # ---------------------------------------------------------------- command: install (run by setup)
 
 cmd_install() {
-    local src=$0 settings=() kv installed_serial
+    local src settings=() kv installed_serial
+    src="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     for kv in "$@"; do settings+=("$kv"); done
     installed_serial=$(sed -n 's/^ASD_DEV_SERIAL=\([0-9]*\)$/\1/p' "$ROOT/bin/asd-dev" 2>/dev/null | head -n1 || true)
     if ((${installed_serial:-0} > ASD_DEV_SERIAL)) && [[ ${ASD_DEV_ALLOW_DOWNGRADE:-} != yes ]]; then
@@ -659,6 +788,9 @@ cmd_install() {
         chmod 600 "$HOSTKEY"
     fi
     find "$LOGS" -name '*.log' -mtime +14 -delete 2>/dev/null || true
+    cleanup_stale
+    load_config
+    say "session defaults: $(describe_resources); change them with: asd-dev config key=value"
     printf 'ASD_DEV_INSTALLED %s %s %s\n' "$ASD_DEV_VERSION" "$(id -un)" "$(id -u)"
     printf 'ASD_DEV_HOSTKEY %s\n' "$(cut -d' ' -f1,2 "$HOSTKEY.pub")"
     if [[ -f $HOME/.ssh/slurm_key.pub ]]; then
@@ -674,12 +806,12 @@ cmd_install() {
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
 human_size() { numfmt --to=iec --suffix=B "$(stat -c %s "$1")"; }
 
+# The default install keeps the old tooling's file names; other installs get their own files.
 docker_state_file() {
-    if [[ $SESSION_NAME == default ]]; then
-        printf '%s' "$DOCKER_STATE_DIR/slurm-docker-state.tar.zst"
-    else
-        printf '%s' "$DOCKER_STATE_DIR/slurm-docker-state-$SESSION_NAME.tar.zst"
-    fi
+    local base=slurm-docker-state
+    [[ $SESSION_NAME == default ]] || base+="-$SESSION_NAME"
+    is_default_install || base+="-${INSTALL_ID#.}"
+    printf '%s' "$DOCKER_STATE_DIR/$base.tar.zst"
 }
 
 # Docker state is used only from a directory the user owns alone.
@@ -689,8 +821,26 @@ docker_state_dir_ok() {
     [[ $owner == "$(id -u)" && $mode =~ [0-7][0145][0145]$ ]]
 }
 
+# Saving is safe only after a complete load: saving after a failed or partial load would replace
+# the good saved state with an empty or partial one.
+DOCKER_LOADED_MARK=/tmp/.asd-dev-docker-loaded
+DOCKER_NOSAVE_MARK=/tmp/.asd-dev-docker-nosave
+NOTICE_QUEUE=/tmp/.asd-dev-notices
+
+# Queues a notice for the session's terminals (written once one exists, see the main loop).
+queue_notice() { printf '%s\n' "$1" >>"$NOTICE_QUEUE"; }
+
+saving_off() { # saving_off REASON TMPDISK_MIB_TO_SUGGEST
+    local file again
+    file=$(docker_state_file)
+    : >"$DOCKER_NOSAVE_MARK"
+    again="asd-dev start $( [[ $SESSION_NAME == default ]] || echo "$SESSION_NAME ")--tmpdisk $2"
+    log "[docker] WARNING: $1. Docker started empty; saving is off for this session, so $file is kept."
+    queue_notice "asd-dev: $1. Docker started EMPTY, and saving docker state is OFF for this session, so your saved state is kept. To try again with more /tmp: asd-dev stop, then $again"
+}
+
 load_docker_state() {
-    local file
+    local file need avail
     file=$(docker_state_file)
     [[ -f $file ]] || {
         log "[docker] no saved docker state for this session yet ($file)"
@@ -698,19 +848,26 @@ load_docker_state() {
     }
     if ! docker_state_dir_ok || [[ $(stat -c %u "$file") != "$(id -u)" ]]; then
         log "[docker] WARNING: not loading $file: it or its directory is not owned by you, or others can write to it."
+        : >"$DOCKER_NOSAVE_MARK"
+        return 0
+    fi
+    # Saves record their unpacked size next to the archive; older ones are checked by the extract.
+    need=$(cat "$file.size" 2>/dev/null || true)
+    avail=$(df --output=avail -B1 /tmp | tail -n1 | tr -d ' ')
+    if [[ $need =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]] && ((need + need / 10 > avail)); then
+        saving_off "the saved docker state needs $(numfmt --to=iec "$need")B in /tmp, but this session has only $(numfmt --to=iec "$avail")B" \
+            $((need * 12 / 10 / 1048576 + 4096))
         return 0
     fi
     log "[docker] loading saved docker state ($(human_size "$file")) from $file ..."
     if zstd -q -d --stdout "$file" | rootlesskit tar --blocking-factor=64 -xpf - -C / tmp/docker; then
         log "[docker] docker state loaded"
     else
-        log "[docker] WARNING: loading docker state failed; starting with an empty docker. The saved file is kept."
         rootlesskit rm -rf /tmp/docker || true
+        saving_off "loading the saved docker state failed (see asd-dev logs; it may have run out of /tmp)" \
+            $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))
     fi
 }
-
-# Saving is only safe once loading finished; otherwise a stop during the load would overwrite a good save.
-DOCKER_LOADED_MARK=/tmp/.asd-dev-docker-loaded
 
 start_docker() {
     if [[ $DOCKER_STATE == yes ]]; then load_docker_state; fi
@@ -739,6 +896,10 @@ save_docker_state() {
         log "[docker] not saving docker state: it was still being loaded"
         return 0
     fi
+    if [[ -e $DOCKER_NOSAVE_MARK ]]; then
+        log "[docker] not saving docker state: saving is off for this session (see above), the saved file is kept"
+        return 0
+    fi
     file=$(docker_state_file)
     if [[ ! -d $DOCKER_STATE_DIR ]]; then
         mkdir -p "$DOCKER_STATE_DIR" && chmod 700 "$DOCKER_STATE_DIR"
@@ -748,11 +909,22 @@ save_docker_state() {
         return 0
     fi
     log "[docker] saving docker state ($why) to $file ..."
+    # Leftovers of a save that SLURM killed; one job per session name writes here.
+    rm -f "$file".tmp.* "$file".size.tmp
     tmp=$(mktemp "$file.tmp.XXXXXX")
-    if rootlesskit tar -C / -cf - tmp/docker | zstd -q -T0 -3 >"$tmp" && mv -f "$tmp" "$file"; then
-        log "[docker] docker state saved ($(human_size "$file"))"
+    SAVE_TMP=$tmp
+    # Read the archive back before it replaces the previous one; that also yields the unpacked
+    # size, which the next load compares with the free /tmp space.
+    local size
+    if rootlesskit tar -C / -cf - tmp/docker | zstd -q -T0 -3 >"$tmp" &&
+        size=$(zstd -q -d --stdout "$tmp" | wc -c) && ((size > 0)); then
+        mv -f "$tmp" "$file"
+        SAVE_TMP=""
+        (umask 077 && printf '%s\n' "$size" >"$file.size.tmp") && mv -f "$file.size.tmp" "$file.size"
+        log "[docker] docker state saved ($(human_size "$file"), $(numfmt --to=iec "$size")B unpacked)"
     else
         rm -f "$tmp"
+        SAVE_TMP=""
         log "[docker] WARNING: saving docker state failed; the previous save is kept"
     fi
 }
@@ -823,22 +995,26 @@ write_state() {
     mv -f "$tmp" "$(state_file "$SLURM_JOB_ID")"
 }
 
-record_end() { # record_end REASON KIND
-    printf 'job=%s\nended=%s\nreason=%s\nkind=%s\n' "$SLURM_JOB_ID" "$(date '+%F %T')" "$1" "$2" \
-        >"$SESSIONS/last-$SESSION_NAME"
+record_end() { write_end_record "$SESSION_NAME" "$SLURM_JOB_ID" "$1" "$2"; } # record_end REASON KIND
+
+remove_job_files() {
+    rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID".{stop,seen,stopping}
 }
 
 finish() { # finish REASON KIND
     local why=$1
+    # First, so proxies and "asd-dev start" report "stopping" instead of "starting" meanwhile.
+    : >"$SESSIONS/$SLURM_JOB_ID.stopping"
     log "stopping: $why"
     notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) is stopping: $why."
     record_end "$why" "$2"
-    rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop" "$SESSIONS/$SLURM_JOB_ID.seen"
+    rm -f "$(state_file "$SLURM_JOB_ID")"
     kill "$SSHD_PID" 2>/dev/null || true
     if [[ $DOCKER_STATE == yes ]]; then
         stop_dockerd
         save_docker_state "$why"
     fi
+    remove_job_files
     log "session ended"
     exit 0
 }
@@ -847,17 +1023,33 @@ on_term() {
     log "SLURM is ending the job (time limit or scancel)"
     notify_terminals "asd-dev: SLURM is ending this session now (time limit reached, or the job was cancelled)."
     record_end "it was ended by SLURM (time limit or cancel)" slurm
-    rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop" "$SESSIONS/$SLURM_JOB_ID.seen"
+    # A save cut short by SLURM leaves a partial archive; the previous save stays in place.
+    [[ -n ${SAVE_TMP:-} ]] && rm -f "$SAVE_TMP"
+    remove_job_files
     exit 143
+}
+
+fail_start() { # fail_start REASON
+    log "ERROR: $1"
+    record_end "it failed to start: $1" fail
+    remove_job_files
+    exit 1
+}
+
+# Prints the PIDs of this job's processes, comma-separated (from the job's cgroup).
+job_pids() {
+    local cg pids
+    cg=$(sed -n 's/^0:://p' /proc/self/cgroup)
+    pids=$(find "/sys/fs/cgroup${cg%%/step_*}" -name cgroup.procs -exec cat {} + 2>/dev/null | tr '\n' ',' || true)
+    printf '%s' "${pids%,}"
 }
 
 # Prints the terminals (pts/N) of this job's processes: VS Code terminals and ssh sessions.
 job_terminals() {
-    local cg pids
-    cg=$(sed -n 's/^0:://p' /proc/self/cgroup)
-    pids=$(find "/sys/fs/cgroup${cg%%/step_*}" -name cgroup.procs -exec cat {} + 2>/dev/null | tr '\n' ',' || true)
+    local pids
+    pids=$(job_pids)
     [[ -n $pids ]] || return 0
-    ps -o tty= -p "${pids%,}" 2>/dev/null | sort -u | grep '^pts/' || true
+    ps -o tty= -p "$pids" 2>/dev/null | sort -u | grep '^pts/' || true
 }
 have_terminal() { [[ -n $(job_terminals) ]]; }
 
@@ -898,7 +1090,9 @@ session_active() {
         return 0
     fi
     LAST_CHECK=$now
-    pgrep -u "$(id -u)" '^(tmux|screen|SCREEN)' >/dev/null 2>&1
+    local pids
+    pids=$(job_pids)
+    [[ -n $pids ]] && ps -o comm= -p "$pids" 2>/dev/null | grep -qE '^(tmux|screen|SCREEN)'
 }
 
 cmd_job() {
@@ -918,32 +1112,39 @@ cmd_job() {
     unset SSH_AUTH_SOCK SSH_CLIENT SSH_CONNECTION SSH_TTY
     DOCKER_STATE_DIR="$DOCKER_STATE_ROOT/$(id -u)"
     SSHD_PID="" PORT=""
+    # Traps first: with a short --time, SLURM's USR1 can arrive within seconds of the start.
+    SAVE_REQUESTED=no
+    trap on_term TERM INT HUP
+    trap 'SAVE_REQUESTED=yes' USR1
     mkdir -p "$SESSIONS" "$LOGS"
+    # Replaced by the real reason when the session ends; left as is it means SLURM killed it.
+    record_end "it is running" running
     log "asd-dev $ASD_DEV_VERSION: session '$SESSION_NAME', job $SLURM_JOB_ID on $(hostname -s)," \
         "${SLURM_CPUS_ON_NODE:-?} CPUs, ${SLURM_MEM_PER_NODE:-?} MB RAM, $(df -Ph /tmp | awk 'NR == 2 { print $2 }') /tmp," \
         "idle_timeout=${idle_timeout} min, docker_state=$DOCKER_STATE"
-    [[ -f $HOSTKEY ]] || {
-        log "ERROR: $HOSTKEY is missing; run the setup script on your laptop again"
-        exit 1
-    }
+    [[ -f $HOSTKEY ]] || fail_start "$HOSTKEY is missing; run the setup script on your laptop again"
 
     ADDR=$(getent ahostsv4 "$(hostname -s).$CLUSTER_DOMAIN" 2>/dev/null | awk 'NR == 1 { print $1 }' || true)
+    if [[ -z $ADDR ]]; then
+        ADDR=$(ip -4 -o addr show 2>/dev/null | awk '$4 ~ /^10\.0\.50\./ { sub(/\/.*/, "", $4); print $4; exit }' || true)
+    fi
+    [[ -n $ADDR ]] || log "WARNING: could not find this node's cluster network address; sshd listens on all addresses"
     local candidates=($(($(id -u) * 20 - 1))) i
     for ((i = 0; i < 10; i++)); do candidates+=($((20000 + RANDOM % 12000))); done
-    if ! start_sshd "${candidates[@]}"; then
-        log "ERROR: could not start sshd on any port"
-        exit 1
-    fi
+    start_sshd "${candidates[@]}" || fail_start "could not start sshd on any port"
     write_state
     log "sshd listening on ${ADDR:-*}:$PORT (pid $SSHD_PID); connect with VS Code to $(host_alias "$SESSION_NAME")"
 
-    trap on_term TERM INT HUP
-    SAVE_REQUESTED=no
-    trap 'SAVE_REQUESTED=yes' USR1
+    # Docker state is saved with dockerd stopped, so the session ends 5 min before its time limit
+    # to have the time for that (only for sessions longer than 15 min).
+    local end=${SLURM_JOB_END_TIME:-0} begin=${SLURM_JOB_START_TIME:-0} early_end=0
+    if [[ $DOCKER_STATE == yes && $end =~ ^[0-9]+$ && $begin =~ ^[0-9]+$ ]] && ((end - begin > 900)); then
+        early_end=$((end - 300))
+    fi
 
     start_docker &
 
-    local last_active=$SECONDS tick=0
+    local last_active=$SECONDS tick=0 line
     TMP_WARNED=no LAST_CHECK=$(date +%s)
     while true; do
         sleep 5 &
@@ -954,8 +1155,18 @@ cmd_job() {
         if [[ $SAVE_REQUESTED == yes ]]; then
             SAVE_REQUESTED=no
             log "the time limit is 10 minutes away"
-            notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) reaches its time limit in 10 minutes and then stops. Save your work."
-            save_docker_state "time limit approaching"
+            if ((early_end > 0)); then
+                notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) ends at $(date -u -d "@$early_end" '+%H:%M') UTC, 5 minutes before its time limit, to save docker state. Save your work."
+            else
+                notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) reaches its time limit in 10 minutes and then stops. Save your work."
+            fi
+        fi
+        if ((early_end > 0 && $(date +%s) >= early_end)); then
+            finish "it reached its time limit (ended 5 min early to save docker state)" timeout
+        fi
+        if [[ -s $NOTICE_QUEUE ]] && have_terminal; then
+            while IFS= read -r line; do notify_terminals "$line"; done <"$NOTICE_QUEUE"
+            : >"$NOTICE_QUEUE"
         fi
         if ! kill -0 "$SSHD_PID" 2>/dev/null; then
             log "WARNING: sshd exited; restarting it on port $PORT"
