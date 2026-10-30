@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# asd-dev (laptop side): start, stop and check your WATcloud dev sessions from this computer.
+# Each command runs ~/.asd-dev/bin/asd-dev on the login node; "start" then opens VS Code.
+# On native Windows use asd-dev.cmd. Run ./setup.sh first.
+set -o errexit -o nounset -o pipefail
+
+REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SSH_ARGS=(-o ConnectTimeout=20)
+if [[ -n ${ASD_DEV_SSH_CONFIG:-} ]]; then SSH_ARGS+=(-F "$ASD_DEV_SSH_CONFIG"); fi
+
+usage() {
+    cat <<'EOF'
+Usage: ./asd-dev COMMAND [args]
+
+  start [NAME] [options]  start a session (if needed), wait until it is ready, open VS Code
+                          options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
+                          --gpu-type TYPE --tmpdisk MiB --idle-timeout MIN; --no-code; --folder PATH
+  code [NAME] [--folder PATH]  open VS Code in a session (connecting starts one if needed)
+  stop [NAME] [--now]     stop a session (--all: every session)
+  status                  list your sessions
+  logs [NAME] [-f]        show a session's log
+  config [key=value ...]  show or change your session defaults (stored on the cluster)
+  ssh [NAME] [command]    open a terminal in a session
+  setup [options]         run ./setup.sh
+
+Usually you only need VS Code: connect to "asd-dev-session" and a session starts by itself.
+EOF
+}
+
+remote() { # runs the cluster helper with the given arguments
+    local cmd=".asd-dev/bin/asd-dev" a
+    for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
+    ssh "${SSH_ARGS[@]}" asd-dev-login "$cmd"
+}
+
+alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; else printf 'asd-dev-session-%s' "$1"; fi; }
+
+open_code() { # open_code HOST_ALIAS FOLDER
+    local alias=$1 folder=$2 user
+    if [[ -z $folder ]]; then
+        user=$(ssh "${SSH_ARGS[@]}" -G "$alias" 2>/dev/null | awk '$1 == "user" { print $2; exit }')
+        folder="/home/$user"
+    fi
+    local uri="vscode-remote://ssh-remote+$alias$folder"
+    if [[ -n ${WSL_DISTRO_NAME:-} ]]; then
+        echo "In VS Code on Windows: Remote Explorer > SSH > $alias > Connect"
+        return
+    fi
+    if command -v code >/dev/null 2>&1; then
+        echo "Opening VS Code: $uri"
+        code --folder-uri "$uri"
+    else
+        echo "VS Code's 'code' command is not on your PATH. In VS Code: Remote Explorer > SSH > $alias > Connect"
+        [[ $(uname -s) == Darwin ]] && echo "(To add it: in VS Code press F1 and run 'Shell Command: Install 'code' command in PATH'.)"
+        return 0
+    fi
+}
+
+cmd_start() {
+    local args=() no_code=no folder="" out alias
+    while (($#)); do
+        case $1 in
+            --no-code) no_code=yes ;;
+            --folder) folder=${2:?--folder needs a path}; shift ;;
+            *) args+=("$1") ;;
+        esac
+        shift
+    done
+    out=$(remote start ${args[@]+"${args[@]}"}) || exit $?
+    alias=$(printf '%s\n' "$out" | awk '$1 == "ASD_DEV_READY" { print $2 }' | tail -n1)
+    [[ -n $alias ]] || exit 1
+    if [[ $no_code == no ]]; then open_code "$alias" "$folder"; fi
+}
+
+cmd_code() {
+    local name="" folder=""
+    while (($#)); do
+        case $1 in
+            --folder) folder=${2:?--folder needs a path}; shift ;;
+            -*) echo "unknown option $1" >&2; exit 1 ;;
+            *) name=$1 ;;
+        esac
+        shift
+    done
+    open_code "$(alias_for "$name")" "$folder"
+}
+
+cmd_ssh() {
+    local name=""
+    if (($#)) && [[ $1 != -* ]]; then name=$1; shift; fi
+    exec ssh "${SSH_ARGS[@]}" "$(alias_for "$name")" "$@"
+}
+
+main() {
+    local cmd=${1:-help}
+    shift || true
+    case $cmd in
+        start) cmd_start "$@" ;;
+        code | open) cmd_code "$@" ;;
+        ssh | shell) cmd_ssh "$@" ;;
+        stop | status | logs | log | config | version) remote "$cmd" "$@" ;;
+        setup) exec "$REPO_DIR/setup.sh" "$@" ;;
+        help | -h | --help) usage ;;
+        *) usage >&2; exit 1 ;;
+    esac
+}
+
+main "$@"
