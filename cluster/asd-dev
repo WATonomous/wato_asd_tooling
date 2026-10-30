@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.8
+ASD_DEV_VERSION=2.0.0-beta.9
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=8
+ASD_DEV_SERIAL=9
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -513,15 +513,20 @@ stop_job() {
     if [[ $state != RUNNING || $FLAG_NOW == yes || $comment != asd-dev ]]; then
         scancel "$id" </dev/null
         say "cancelled job $id."
+        if [[ $state == RUNNING ]]; then
+            say "Connecting from VS Code will not start a new session for ${CFG[auto_start_cooldown]} min; use asd-dev start for one sooner."
+        fi
         return
     fi
     mkdir -p "$SESSIONS"
     : >"$SESSIONS/$id.stop"
     if [[ ${SLURM_JOB_ID:-} == "$id" ]]; then
         say "stopping this session (job $id). It saves docker state if enabled, then this window disconnects."
+        say "Connecting from VS Code will not start a new session for ${CFG[auto_start_cooldown]} min; use asd-dev start for one sooner."
         return
     fi
     say "stopping job $id on $node (saving docker state first if enabled; this can take a few minutes)..."
+    say "Connecting from VS Code will not start a new session for ${CFG[auto_start_cooldown]} min; use asd-dev start for one sooner."
     while squeue -h -j "$id" -t PD,CF,R,CG,S -o %T 2>/dev/null </dev/null | grep -q .; do
         sleep 3
         waited=$((waited + 3))
@@ -537,6 +542,7 @@ stop_job() {
 
 cmd_stop() {
     parse_session_flags "$@"
+    load_config
     local lines line
     if [[ -n $FLAG_JOB ]]; then
         line=$(squeue --me -h -j "$FLAG_JOB" -o "$SQ_FORMAT" 2>/dev/null </dev/null || true)

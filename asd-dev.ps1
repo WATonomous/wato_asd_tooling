@@ -22,7 +22,7 @@ Usage: .\asd-dev.cmd COMMAND [args]
   status                  list your sessions
   logs [NAME] [-f]        show a session's log
   config [key=value ...]  show or change your session defaults (stored on the cluster)
-  ssh [NAME] [command]    open a terminal in a session
+  ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run setup
 
 Usually you only need VS Code: connect to "asd-dev-session" and a session starts by itself.
@@ -95,7 +95,7 @@ switch ($cmd) {
     }
     { $_ -in @('ssh', 'shell') } {
         $name = ''
-        if ($rest.Count -gt 0 -and -not $rest[0].StartsWith('-')) { $name = $rest[0]; $rest = @($rest | Select-Object -Skip 1) }
+        if ($rest.Count -gt 1 -and ($rest[0] -eq '--name' -or $rest[0] -eq '-n')) { $name = $rest[1]; $rest = @($rest | Select-Object -Skip 2) }
         & ssh.exe @SshArgs (Get-Alias $name) @rest
         exit $LASTEXITCODE
     }

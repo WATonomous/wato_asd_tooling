@@ -20,7 +20,7 @@ Usage: ./asd-dev COMMAND [args]
   status                  list your sessions
   logs [NAME] [-f]        show a session's log
   config [key=value ...]  show or change your session defaults (stored on the cluster)
-  ssh [NAME] [command]    open a terminal in a session
+  ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run ./setup.sh
 
 Usually you only need VS Code: connect to "asd-dev-session" and a session starts by itself.
@@ -100,7 +100,7 @@ cmd_code() {
 
 cmd_ssh() {
     local name=""
-    if (($#)) && [[ $1 != -* ]]; then name=$1; shift; fi
+    if [[ ${1:-} == --name || ${1:-} == -n ]]; then name=${2:?--name needs a value}; shift 2; fi
     exec ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$(alias_for "$name")" "$@"
 }
 

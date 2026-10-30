@@ -76,6 +76,8 @@ keeps it alive while you are disconnected. A VS Code window that stays open keep
 running until its time limit, so close the window when you are done.
 
 To stop it now, run `asd-dev stop` in the VS Code terminal, or `./asd-dev stop` on your computer.
+After you stop a session, connecting from VS Code does not start a new one for 3 hours (see
+step 2); run `./asd-dev start` when you want the next one sooner.
 Stopping saves your docker images and containers; the next session restores them. Saved docker
 state lives in `/mnt/wato-drive/slurm-docker-sessions/<your uid>/`.
 
@@ -121,7 +123,7 @@ On your computer (`.\asd-dev.cmd` on Windows) or, without the `./`, in a session
 | `./asd-dev status` | list your sessions with node, time left and resources |
 | `./asd-dev logs [NAME]` | show a session's log (`-f` to follow) |
 | `./asd-dev config [key=value ...]` | show or change your defaults |
-| `./asd-dev ssh [NAME]` | open a terminal in a session (same as `ssh asd-dev-session`) |
+| `./asd-dev ssh [--name NAME] [command]` | open a terminal in a session, or run a command there (same as `ssh asd-dev-session`) |
 
 `ssh asd-dev-session` also works in any terminal on your computer, and so do `scp` and `rsync`.
 
@@ -140,6 +142,7 @@ look for lines starting with `asd-dev:`. Most problems are one of these:
 | `Host key verification failed` | The session host key changed (for example `~/.asd-dev` was deleted). Run setup again. |
 | `Could not resolve hostname asd-dev-session` | Your SSH config has no asd-dev entries. Run setup again; on Windows run `setup.cmd`. |
 | `asd-dev: ERROR: not starting a new ... session by itself so soon` | Your last session ended less than 3 hours ago (the line above says how). Run `./asd-dev start`. |
+| `Disk quota exceeded` in your home | VS Code keeps a server of several hundred MB per VS Code version in `~/.vscode-server`, in your 20 GiB home. Delete old versions there. |
 | `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `asd-dev logs`. |
 
 If docker misbehaves after a restore, start once without the saved state

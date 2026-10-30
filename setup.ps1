@@ -129,7 +129,7 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
     if ($proxyConfig) { $proxyF = ' -F ' + (Quote-Value (To-SshPath $proxyConfig)) }
     $lines = @(
         $BlockBegin,
-        "# Written by wato_asd_tooling's setup.sh. Run it again to change this block; edits here are lost.",
+        "# Written by wato_asd_tooling's setup. Run it again to change this block; edits here are lost.",
         '# The login node, used as the hop; the "*" keeps VS Code from listing it (VS Code must not run there).',
         'Host asd-dev-login*',
         "    HostName $script:LoginHostName",
@@ -143,11 +143,14 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         '    ServerAliveInterval 15',
         '    ServerAliveCountMax 4',
         '',
+        '# %h is the name as typed (HostName %h keeps a "HostName" under "Host *" from applying);',
+        "# Windows 10's OpenSSH 7.7 does not know the %n token.",
         'Host asd-dev-session asd-dev-session-*',
+        '    HostName %h',
         "    User $script:ClusterUser",
         "    IdentityFile $id",
         '    IdentitiesOnly yes',
-        "    ProxyCommand ssh$proxyF -T asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy %n",
+        "    ProxyCommand ssh$proxyF -T asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy %h",
         $script:RcNone,
         '    HostKeyAlias asd-dev-session',
         "    UserKnownHostsFile $kh",
@@ -352,7 +355,13 @@ try {
     $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-T', 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
     if ($r.Text -notmatch 'ASD_DEV_LOGIN_OK') {
         $detail = (($r.Text -split "`n") | Where-Object { $_ -notmatch '^Warning: Permanently added' } | Select-Object -Last 3) -join ' / '
-        if ($r.Text -match 'Permission denied') {
+        if ($r.Text -match 'UNPROTECTED|bad permissions|too open') {
+            # Checked first: ssh then also prints "Permission denied", which would blame the username.
+            Fail "Windows' ssh ignores $Key because other users can read it." @(
+                'Fix the file permissions in PowerShell, then run setup again:',
+                "  icacls `"$Key`" /inheritance:r /grant:r `"$($env:USERNAME):(R)`"",
+                "ssh said: $detail")
+        } elseif ($r.Text -match 'Permission denied') {
             Fail "$login refused the login for '$($script:ClusterUser)' with key $Key." @(
                 'The usual causes:',
                 '- The username is not your compute cluster username. Use the ''Username'' under',
@@ -373,11 +382,6 @@ try {
         } elseif ($r.Text -match 'refused') {
             Fail "$login refused the connection; it may be down." @(
                 'Try the other login node: .\setup.cmd --login wato-login2. Status: https://status.watonomous.ca',
-                "ssh said: $detail")
-        } elseif ($r.Text -match 'UNPROTECTED|bad permissions|too open') {
-            Fail "Windows' ssh refuses to use $Key because other users can read it." @(
-                'Fix the file permissions in PowerShell, then run setup again:',
-                "  icacls `"$Key`" /inheritance:r /grant:r `"$($env:USERNAME):(R)`"",
                 "ssh said: $detail")
         } else {
             Fail "logging in to $login failed (exit code $($r.Code))." @("ssh said: $detail")

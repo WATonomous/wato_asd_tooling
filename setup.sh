@@ -173,7 +173,7 @@ make_block() {
     [[ -n $3 ]] && proxy_f=" -F $(ssh_quote "$3")"
     cat <<EOF
 $BLOCK_BEGIN
-# Written by wato_asd_tooling's setup.sh. Run it again to change this block; edits here are lost.
+# Written by wato_asd_tooling's setup. Run it again to change this block; edits here are lost.
 # The login node, used as the hop; the "*" keeps VS Code from listing it (VS Code must not run there).
 Host asd-dev-login*
     HostName $LOGIN_HOSTNAME
@@ -186,11 +186,14 @@ Host asd-dev-login*
     ServerAliveInterval 15
     ServerAliveCountMax 4
 
+# %h is the name as typed (HostName %h keeps a "HostName" under "Host *" from applying);
+# Windows 10's OpenSSH 7.7 does not know the %n token.
 Host asd-dev-session asd-dev-session-*
+    HostName %h
     User $CLUSTER_USER
     IdentityFile $identity
     IdentitiesOnly yes
-    ProxyCommand ssh$proxy_f -T asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy %n$RC_NONE
+    ProxyCommand ssh$proxy_f -T asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy %h$RC_NONE
     HostKeyAlias asd-dev-session
     UserKnownHostsFile $known
     StrictHostKeyChecking yes
@@ -424,6 +427,16 @@ main() {
         local detail
         detail=$(printf '%s\n' "$out" | grep -v '^Warning: Permanently added' | tail -n 3)
         case $out in
+            *"bad permissions"* | *"UNPROTECTED"*)
+                if [[ $key == /mnt/[a-z]/* ]]; then
+                    fail "ssh ignores the key $key because its permissions are too open." \
+                        "Files on the Windows drive cannot be made private from WSL. Copy the key into WSL:" \
+                        "  cp '$key' ~/.ssh/ && chmod 600 ~/.ssh/$(basename "$key")" \
+                        "then run: ./setup.sh --key ~/.ssh/$(basename "$key")" "ssh said: $detail"
+                fi
+                fail "ssh ignores the key $key because other users can read it." \
+                    "Fix it with: chmod 600 '$key'   then run setup again." "ssh said: $detail"
+                ;;
             *"Permission denied"*)
                 fail "$login refused the login for '$CLUSTER_USER' with key $key." \
                     "The usual causes:" \
@@ -449,7 +462,7 @@ main() {
                     "Try the other login node: ./setup.sh --login wato-login2. Status: https://status.watonomous.ca" \
                     "ssh said: $detail"
                 ;;
-            *"passphrase"* | *"bad permissions"* | *"UNPROTECTED"*)
+            *"passphrase"*)
                 fail "ssh could not use the key $key." "ssh said: $detail" ;;
             *) fail "logging in to $login failed (exit code $rc)." "ssh said: $detail" ;;
         esac
