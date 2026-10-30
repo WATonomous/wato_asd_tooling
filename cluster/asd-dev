@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.6
+ASD_DEV_VERSION=2.0.0-beta.7
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=6
+ASD_DEV_SERIAL=7
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -642,6 +642,8 @@ cmd_install() {
     fi
     if [[ ! -f $HOSTKEY ]]; then
         ssh-keygen -q -t ed25519 -N '' -C "asd-dev session host key" -f "$HOSTKEY" </dev/null
+        # Default ACLs on some homes make it group-readable, and sshd then refuses the key.
+        chmod 600 "$HOSTKEY"
     fi
     find "$LOGS" -name '*.log' -mtime +14 -delete 2>/dev/null || true
     printf 'ASD_DEV_INSTALLED %s %s %s\n' "$ASD_DEV_VERSION" "$(id -un)" "$(id -u)"

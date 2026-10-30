@@ -117,6 +117,7 @@ function Invoke-Native([string]$exe, [string[]]$arguments) {
 # ---------------------------------------------------------------- ssh config
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$script:RcNone = $null
 
 function To-SshPath([string]$p) { return $p.Replace('\', '/') }
 function Quote-Value([string]$v) { if ($v -match '\s') { return '"' + $v + '"' } else { return $v } }
@@ -135,6 +136,7 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         "    User $script:ClusterUser",
         "    IdentityFile $id",
         '    IdentitiesOnly yes',
+        $script:RcNone,
         "    UserKnownHostsFile $kh",
         '    StrictHostKeyChecking accept-new',
         '    ConnectTimeout 10',
@@ -145,7 +147,8 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         "    User $script:ClusterUser",
         "    IdentityFile $id",
         '    IdentitiesOnly yes',
-        "    ProxyCommand ssh$proxyF asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy %n",
+        "    ProxyCommand ssh$proxyF -T asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy %n",
+        $script:RcNone,
         '    HostKeyAlias asd-dev-session',
         "    UserKnownHostsFile $kh",
         '    StrictHostKeyChecking yes',
@@ -157,7 +160,7 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         'Host *',
         $BlockEnd
     )
-    return ($lines -join "`n")
+    return (($lines | Where-Object { $_ -ne $null }) -join "`n")
 }
 
 function Read-Lines([string]$path) {
@@ -315,10 +318,12 @@ if (-not $defKey) {
         $kg = Join-Path (Split-Path -Parent $Ssh) 'ssh-keygen.exe'
         & $kg -t ed25519 -f (Join-Path $SshDir 'id_ed25519') -C "$($script:ClusterUser)@watcloud"
         $pub = Get-Content -Raw (Join-Path $SshDir 'id_ed25519.pub')
-        Fail 'new key created. Register it before continuing:' @(
-            "1. Add this public key to your WATcloud profile ($ProfileUrl):",
-            "   $($pub.Trim())",
-            '2. Wait for the change to be applied (usually about 15 minutes), then run setup.cmd again.')
+        Write-Host ''
+        Write-Host 'Next step: register the new key, then run setup again.' -ForegroundColor Yellow
+        Info "1. Add this public key to your WATcloud profile ($ProfileUrl):"
+        Info "   $($pub.Trim())"
+        Info '2. Wait for the change to be applied (usually about 15 minutes), then run setup.cmd again.'
+        Exit-Setup 2
     }
 }
 $Key = Ask 'Private key file' $defKey
@@ -343,7 +348,7 @@ Step "Checking that you can log in to $login as $($script:ClusterUser)"
 $tmpCfg = [System.IO.Path]::GetTempFileName()
 try {
     [System.IO.File]::WriteAllText($tmpCfg, (Make-Block $Key $Known $tmpCfg), $Utf8NoBom)
-    $r = Invoke-Native $Ssh @('-F', $tmpCfg, 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
+    $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-T', 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
     if ($r.Text -notmatch 'ASD_DEV_LOGIN_OK') {
         $detail = (($r.Text -split "`n") | Select-Object -Last 3) -join ' / '
         if ($r.Text -match 'Permission denied') {
@@ -391,7 +396,7 @@ try {
     foreach ($s in $ClusterSettings) { $settings += " $s" }
     $d = $script:ClusterDir
     $remote = "mkdir -p $d/tmp && tr -d '\r' < .asd-dev-upload > $d/tmp/asd-dev.new && rm -f .asd-dev-upload && bash $d/tmp/asd-dev.new install$settings"
-    $r = Invoke-Native $Ssh @('-F', $tmpCfg, 'asd-dev-login', $remote)
+    $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-T', 'asd-dev-login', $remote)
     if ($r.Text -match 'ASD_DEV_NEWER_INSTALLED') {
         Fail 'your cluster home already has a newer asd-dev than this copy of wato_asd_tooling.' @(
             'Update this copy (git pull, or download it again) and run setup.cmd again.')
@@ -413,11 +418,19 @@ Ok "  installed $installed"
 
 # --- write the ssh config
 Step 'Writing the ssh config'
+# A RemoteCommand for all hosts would clash with the commands VS Code and the ProxyCommand run.
+if (Test-Path -LiteralPath $Config) {
+    $g = Invoke-Native $Ssh @('-F', $Config, '-G', 'asd-dev-session')
+    if ($g.Text -match '(?m)^remotecommand ') {
+        Warn "$Config sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none' to override it."
+        $script:RcNone = '    RemoteCommand none'
+    }
+}
 Write-KnownHosts $Known
 Install-Block $Config (Make-Block $Key $Known $ProxyConfig)
 $r = Invoke-Native $Ssh @('-F', $Config, '-G', 'asd-dev-session')
 if ($r.Code -ne 0) { Fail "ssh cannot parse $Config after the change." @($r.Text, "Your previous file is in $Config.asd-dev-backup-*.") }
-$r = Invoke-Native $Ssh @('-F', $Config, 'asd-dev-login', "$($script:ClusterDir)/bin/asd-dev version")
+$r = Invoke-Native $Ssh @('-F', $Config, '-T', 'asd-dev-login', "$($script:ClusterDir)/bin/asd-dev version")
 if ($r.Code -ne 0) { Fail 'the new config does not work for the login node:' @($r.Text) }
 Ok "  checked: 'ssh asd-dev-login' works with the new config"
 

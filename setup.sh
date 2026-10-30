@@ -151,6 +151,9 @@ native_path() { # native_path PATH windows|unix
     fi
 }
 
+# Compares two text files; cmp is missing on minimal Fedora and Arch images.
+same_file() { [[ -f $1 && -f $2 ]] && [[ "$(cat "$1")" == "$(cat "$2")" ]]; }
+
 ssh_quote() { # quotes a config value if needed
     if [[ $1 == *[[:space:]]* ]]; then printf '"%s"' "$1"; else printf '%s' "$1"; fi
 }
@@ -159,6 +162,7 @@ ssh_quote() { # quotes a config value if needed
 
 LOGIN_HOSTNAME=""
 CLUSTER_USER=""
+RC_NONE=""
 CLUSTER_DIR=.asd-dev
 
 # make_block IDENTITY KNOWN_HOSTS PROXY_CONFIG(empty = default config)
@@ -175,7 +179,7 @@ Host asd-dev-login*
     HostName $LOGIN_HOSTNAME
     User $CLUSTER_USER
     IdentityFile $identity
-    IdentitiesOnly yes
+    IdentitiesOnly yes$RC_NONE
     UserKnownHostsFile $known
     StrictHostKeyChecking accept-new
     ConnectTimeout 10
@@ -186,7 +190,7 @@ Host asd-dev-session asd-dev-session-*
     User $CLUSTER_USER
     IdentityFile $identity
     IdentitiesOnly yes
-    ProxyCommand ssh$proxy_f asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy %n
+    ProxyCommand ssh$proxy_f -T asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy %n$RC_NONE
     HostKeyAlias asd-dev-session
     UserKnownHostsFile $known
     StrictHostKeyChecking yes
@@ -232,7 +236,7 @@ install_block() {
             { print }' "$config"
     } >"$tmp"
 
-    if cmp -s "$tmp" "$config"; then
+    if same_file "$tmp" "$config"; then
         rm -f "$tmp"
         info "  $config is already up to date"
         return
@@ -366,10 +370,11 @@ main() {
         if confirm "Create a new key ($HOME/.ssh/id_ed25519)?"; then
             mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
             ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -C "$CLUSTER_USER@watcloud"
-            fail "new key created. Register it before continuing:" \
-                "1. Add this public key to your WATcloud profile ($PROFILE_URL):" \
-                "   $(cat "$HOME/.ssh/id_ed25519.pub")" \
-                "2. Wait for the change to be applied (usually about 15 minutes), then run ./setup.sh again."
+            printf '\n%sNext step: register the new key, then run setup again.%s\n' "$C_YEL" "$C_OFF"
+            info "1. Add this public key to your WATcloud profile ($PROFILE_URL):"
+            info "   $(cat "$HOME/.ssh/id_ed25519.pub")"
+            info "2. Wait for the change to be applied (usually about 15 minutes), then run ./setup.sh again."
+            exit 2
         fi
     fi
     ask key "Private key file" "$def_key"
@@ -410,7 +415,7 @@ main() {
     # shellcheck disable=SC2094 # only the file name is used, not its content
     make_block "$nkey" "$nknown" "$(native_path "$TMPCFG" $pathstyle)" >"$TMPCFG"
     set +o errexit
-    out=$(ssh -F "$TMPCFG" asd-dev-login 'echo ASD_DEV_LOGIN_OK $(id -un)' 2>&1 </dev/null)
+    out=$(ssh -F "$TMPCFG" -T asd-dev-login 'echo ASD_DEV_LOGIN_OK $(id -un)' 2>&1 </dev/null)
     rc=$?
     set -o errexit
     if [[ $out != *ASD_DEV_LOGIN_OK* ]]; then
@@ -456,7 +461,7 @@ main() {
     local settings_str="" s
     for s in ${CLUSTER_SETTINGS[@]+"${CLUSTER_SETTINGS[@]}"}; do settings_str+=" $s"; done
     set +o errexit
-    out=$(ssh -F "$TMPCFG" asd-dev-login \
+    out=$(ssh -F "$TMPCFG" -T asd-dev-login \
         "mkdir -p $CLUSTER_DIR/tmp && tr -d '\\r' > $CLUSTER_DIR/tmp/asd-dev.new && bash $CLUSTER_DIR/tmp/asd-dev.new install$settings_str" \
         <"$HELPER" 2>&1)
     rc=$?
@@ -476,12 +481,17 @@ main() {
 
     # --- write this side's ssh config
     step "Writing the ssh config"
+    # A RemoteCommand for all hosts would clash with the commands VS Code and the ProxyCommand run.
+    if [[ -f $config ]] && ssh -F "$config" -G asd-dev-session 2>/dev/null </dev/null | grep -qi '^remotecommand '; then
+        warn "$config sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none' to override it."
+        RC_NONE=$'\n    RemoteCommand none'
+    fi
     write_known_hosts "$known"
     install_block "$config" "$(make_block "$nkey" "$nknown" "$nproxy")"
     ssh -F "$config" -G asd-dev-session >/dev/null 2>&1 ||
         fail "ssh cannot parse $config after the change." "Your previous file is in $config.asd-dev-backup-*."
     set +o errexit
-    out=$(ssh -F "$config" asd-dev-login "$CLUSTER_DIR/bin/asd-dev version" 2>&1 </dev/null)
+    out=$(ssh -F "$config" -T asd-dev-login "$CLUSTER_DIR/bin/asd-dev version" 2>&1 </dev/null)
     rc=$?
     set -o errexit
     ((rc == 0)) || fail "the new config does not work for the login node:" "$out"
@@ -525,7 +535,7 @@ setup_windows_side() {
             # Windows ssh cannot read files inside WSL, so it needs its own copy of the key.
             keyname=$(basename "$key")
             wkey="$wsshdir/asd-dev_$keyname"
-            if [[ ! -f $wkey ]] || ! cmp -s "$key" "$wkey"; then
+            if ! same_file "$key" "$wkey"; then
                 info "Windows' ssh cannot use keys stored inside WSL."
                 if confirm "Copy $key (and .pub) to $(native_path "$wkey" windows) for VS Code?"; then
                     cp "$key" "$wkey"
@@ -539,6 +549,11 @@ setup_windows_side() {
             ;;
     esac
     write_known_hosts "$wknown"
+    RC_NONE=""
+    if [[ -f $wconfig ]] && ssh -F "$wconfig" -G asd-dev-session 2>/dev/null </dev/null | grep -qi '^remotecommand '; then
+        warn "$(native_path "$wconfig" windows) sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none'."
+        RC_NONE=$'\n    RemoteCommand none'
+    fi
     install_block "$wconfig" "$(make_block "$(native_path "$wkey" windows)" "$(native_path "$wknown" windows)" "")"
     ok "  Windows: $(native_path "$wconfig" windows) now has the asd-dev entries"
 }

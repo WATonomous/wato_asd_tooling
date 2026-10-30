@@ -38,7 +38,7 @@ remote() { # runs the cluster helper with the given arguments
     cmd=$(helper_path)
     cmd=${cmd:-.asd-dev/bin/asd-dev}
     for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
-    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} asd-dev-login "$cmd" || rc=$?
+    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T asd-dev-login "$cmd" || rc=$?
     if ((rc == 255)); then
         echo "asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN." >&2
         echo "         Permission denied or an unknown host? Run ./setup.sh again." >&2
