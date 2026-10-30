@@ -48,8 +48,8 @@ In VS Code, open the **Remote Explorer** in the left bar, pick **SSH**, hover ov
 platform of the remote host, choose **Linux**.
 
 If you have no session running, connecting starts one with your defaults (4 CPUs, 16 GB RAM,
-32 GiB of `/tmp`, no GPU, 6 hours). When the cluster has room this takes a few seconds; the first connection
-also installs VS Code's server in your cluster home, which takes a minute.
+32 GiB of `/tmp`, no GPU, 6 hours). When the cluster has room this takes a few seconds; the
+first connection also installs VS Code's server in your cluster home, which takes a minute.
 
 Then open a folder (for example `~/wato_monorepo`) and a terminal. `docker` works there; the
 docker daemon may need a few more seconds after the session starts.
