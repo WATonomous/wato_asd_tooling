@@ -293,7 +293,8 @@ if (-not $ArgUser) {
     Info "the name you use in 'ssh <username>@wato-login1.ext.watonomous.ca'. It can differ from"
     Info "your WATcloud username. Look it up at $ProfileUrl"
 }
-$script:ClusterUser = (Ask 'Cluster username' $defUser) -replace '\s', ''
+# Accept "Name" and a pasted "name@wato-login1.ext.watonomous.ca".
+$script:ClusterUser = ((Ask 'Cluster username' $defUser) -replace '\s', '' -replace '@.*$', '').ToLowerInvariant()
 if (-not $script:ClusterUser) { Fail 'a cluster username is required.' }
 if ($script:ClusterUser -cnotmatch '^[a-z_][a-z0-9_-]{0,31}$') {
     Fail "'$($script:ClusterUser)' is not a valid cluster username (lowercase letters, digits, - and _)."
@@ -350,7 +351,7 @@ try {
     [System.IO.File]::WriteAllText($tmpCfg, (Make-Block $Key $Known $tmpCfg), $Utf8NoBom)
     $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-T', 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
     if ($r.Text -notmatch 'ASD_DEV_LOGIN_OK') {
-        $detail = (($r.Text -split "`n") | Select-Object -Last 3) -join ' / '
+        $detail = (($r.Text -split "`n") | Where-Object { $_ -notmatch '^Warning: Permanently added' } | Select-Object -Last 3) -join ' / '
         if ($r.Text -match 'Permission denied') {
             Fail "$login refused the login for '$($script:ClusterUser)' with key $Key." @(
                 'The usual causes:',

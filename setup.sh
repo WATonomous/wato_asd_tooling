@@ -340,7 +340,9 @@ main() {
         info "your WATcloud username. Look it up at $PROFILE_URL"
     fi
     ask CLUSTER_USER "Cluster username" "$def_user"
-    CLUSTER_USER=$(printf '%s' "$CLUSTER_USER" | tr -d '[:space:]')
+    # Accept "Name" and a pasted "name@wato-login1.ext.watonomous.ca".
+    CLUSTER_USER=$(printf '%s' "$CLUSTER_USER" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    CLUSTER_USER=${CLUSTER_USER%%@*}
     [[ -n $CLUSTER_USER ]] || fail "a cluster username is required."
     [[ $CLUSTER_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] ||
         fail "'$CLUSTER_USER' is not a valid cluster username (lowercase letters, digits, - and _)."
@@ -420,7 +422,7 @@ main() {
     set -o errexit
     if [[ $out != *ASD_DEV_LOGIN_OK* ]]; then
         local detail
-        detail=$(printf '%s\n' "$out" | tail -n 3)
+        detail=$(printf '%s\n' "$out" | grep -v '^Warning: Permanently added' | tail -n 3)
         case $out in
             *"Permission denied"*)
                 fail "$login refused the login for '$CLUSTER_USER' with key $key." \

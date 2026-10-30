@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.7
+ASD_DEV_VERSION=2.0.0-beta.8
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=7
+ASD_DEV_SERIAL=8
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -437,6 +437,8 @@ cmd_proxy() {
             "Click Retry in VS Code in a minute, or wait for it in a terminal with: $(start_cmd "$name")"
     fi
     local addr=${S_ADDR:-$S_NODE.$CLUSTER_DOMAIN} started=$SECONDS rc=0
+    # Marks activity for the idle stop, which samples open connections only once a minute.
+    touch "$SESSIONS/$J_ID.seen" 2>/dev/null || true
     nc -N "$addr" "$S_PORT" || rc=$?
     # A quick failure means nothing answered; a late one is just the end of a connection.
     if ((rc != 0 && SECONDS - started < 5)); then
@@ -448,7 +450,8 @@ cmd_proxy() {
 
 # Parses start/stop flags into FLAG_SETTINGS (key=value words) and NAME.
 parse_session_flags() {
-    NAME=default FLAG_SETTINGS=() FLAG_NOW=no FLAG_JOB="" FLAG_ALL=no FLAG_FOLLOW=no
+    # Inside a session, "asd-dev stop" means this session (sshd's SetEnv provides ASD_DEV_SESSION).
+    NAME=${ASD_DEV_SESSION:-default} FLAG_SETTINGS=() FLAG_NOW=no FLAG_JOB="" FLAG_ALL=no FLAG_FOLLOW=no
     while (($#)); do
         case $1 in
             --name | -n) NAME=${2:?--name needs a value}; shift ;;
@@ -820,7 +823,7 @@ finish() { # finish REASON KIND
     log "stopping: $why"
     notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) is stopping: $why."
     record_end "$why" "$2"
-    rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop"
+    rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop" "$SESSIONS/$SLURM_JOB_ID.seen"
     kill "$SSHD_PID" 2>/dev/null || true
     if [[ $DOCKER_STATE == yes ]]; then
         stop_dockerd
@@ -834,7 +837,7 @@ on_term() {
     log "SLURM is ending the job (time limit or scancel)"
     notify_terminals "asd-dev: SLURM is ending this session now (time limit reached, or the job was cancelled)."
     record_end "it was ended by SLURM (time limit or cancel)" slurm
-    rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop"
+    rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop" "$SESSIONS/$SLURM_JOB_ID.seen"
     exit 143
 }
 
@@ -873,10 +876,18 @@ check_tmp_space() {
     fi
 }
 
+# Something is connected now, connected since the last check (short scp or "ssh host cmd" runs
+# touch the .seen file in the proxy), or a tmux/screen keeps work alive.
 session_active() {
-    local conns
+    local conns seen now
+    now=$(date +%s)
     conns=$(ss -Htn state established "( sport = :$PORT )" 2>/dev/null | wc -l)
-    ((conns > 0)) && return 0
+    seen=$(stat -c %Y "$SESSIONS/$SLURM_JOB_ID.seen" 2>/dev/null || echo 0)
+    if ((conns > 0 || seen >= LAST_CHECK)); then
+        LAST_CHECK=$now
+        return 0
+    fi
+    LAST_CHECK=$now
     pgrep -u "$(id -u)" '^(tmux|screen|SCREEN)' >/dev/null 2>&1
 }
 
@@ -923,7 +934,7 @@ cmd_job() {
     start_docker &
 
     local last_active=$SECONDS tick=0
-    TMP_WARNED=no
+    TMP_WARNED=no LAST_CHECK=$(date +%s)
     while true; do
         sleep 5 &
         wait $! || true
