@@ -29,7 +29,7 @@ EOF
 
 # The helper path from the session host's ProxyCommand (setup's --cluster-dir can change it).
 helper_path() {
-    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -G asd-dev-session 2>/dev/null </dev/null |
+    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null </dev/null |
         awk '$1 == "proxycommand" { for (i = 2; i <= NF; i++) if ($i ~ /\/bin\/asd-dev$/) { print $i; exit } }'
 }
 
@@ -51,7 +51,7 @@ alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; el
 open_code() { # open_code HOST_ALIAS FOLDER
     local alias=$1 folder=$2 user
     if [[ -z $folder ]]; then
-        user=$(ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -G "$alias" 2>/dev/null </dev/null | awk '$1 == "user" { print $2; exit }')
+        user=$(ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "$alias" 2>/dev/null </dev/null | awk '$1 == "user" { print $2; exit }')
         folder="/home/$user"
     fi
     local uri="vscode-remote://ssh-remote+$alias$folder"

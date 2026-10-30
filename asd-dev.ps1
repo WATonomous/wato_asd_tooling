@@ -33,7 +33,7 @@ Usually you only need VS Code: connect to "asd-dev-session" and a session starts
 function Get-HelperPath {
     $old = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'  # 5.1 turns redirected native stderr into errors
-    try { $pc = & ssh.exe @SshArgs -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } | Select-Object -First 1 }
+    try { $pc = & ssh.exe @SshArgs -T -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } | Select-Object -First 1 }
     finally { $ErrorActionPreference = $old }
     if ($pc -and ($pc -match '\s(\S+/bin/asd-dev)(\s|$)')) { return $Matches[1] }
     return '.asd-dev/bin/asd-dev'
@@ -55,7 +55,10 @@ function Get-Alias([string]$name) { if (-not $name -or $name -eq 'default') { 'a
 
 function Open-Code([string]$alias, [string]$folder) {
     if (-not $folder) {
-        $user = (& ssh.exe @SshArgs -G $alias | Where-Object { $_ -match '^user ' } | Select-Object -First 1) -replace '^user ', ''
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'  # ssh -G warns about the pty when stdin is not a console
+        try { $user = (& ssh.exe @SshArgs -T -G $alias 2>$null | Where-Object { $_ -match '^user ' } | Select-Object -First 1) -replace '^user ', '' }
+        finally { $ErrorActionPreference = $old }
         $folder = "/home/$user"
     }
     $uri = "vscode-remote://ssh-remote+$alias$folder"
