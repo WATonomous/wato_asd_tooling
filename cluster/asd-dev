@@ -10,11 +10,20 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.5
+ASD_DEV_VERSION=2.0.0-beta.6
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=5
+ASD_DEV_SERIAL=6
 
-ROOT="$HOME/.asd-dev"
+# The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
+# Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
+if [[ -n ${ASD_DEV_ROOT:-} ]]; then
+    ROOT=$ASD_DEV_ROOT
+else
+    case $0 in
+        */bin/asd-dev | */tmp/asd-dev.new) ROOT=$(cd "$(dirname "$0")/.." && pwd) ;;
+        *) ROOT="$HOME/.asd-dev" ;;
+    esac
+fi
 CONFIG="${ASD_DEV_CONFIG:-$ROOT/config}" # override for tests
 SESSIONS="$ROOT/sessions"
 LOGS="$ROOT/logs"
@@ -35,11 +44,12 @@ declare -A CFG=(
     [gpu_type]=""
     [partition]=""
     [auto_start]=yes
+    [auto_start_cooldown]=180
     [idle_timeout]=60
     [docker_state]=yes
     [connect_wait]=12
 )
-CFG_KEYS=(cpus mem time tmpdisk vram gpus gpu_type partition auto_start idle_timeout docker_state connect_wait)
+CFG_KEYS=(cpus mem time tmpdisk vram gpus gpu_type partition auto_start auto_start_cooldown idle_timeout docker_state connect_wait)
 
 # ---------------------------------------------------------------- output helpers
 
@@ -59,7 +69,7 @@ valid_value() {
     local key=$1 value=$2
     case $key in
         cpus | tmpdisk | gpus) [[ $value =~ ^[0-9]+$ ]] ;;
-        vram | idle_timeout | connect_wait) [[ $value =~ ^[0-9]+$ ]] ;;
+        vram | idle_timeout | connect_wait | auto_start_cooldown) [[ $value =~ ^[0-9]+$ ]] ;;
         mem) [[ $value =~ ^[0-9]+[KMGT]?$ ]] ;;
         time) [[ $value =~ ^([0-9]+-)?[0-9]+(:[0-9]{1,2}){0,2}$ ]] ;;
         gpu_type | partition) [[ $value =~ ^[A-Za-z0-9_]*$ ]] ;;
@@ -123,6 +133,8 @@ gpus=0                # whole GPUs instead of a slice (overrides vram when > 0)
 gpu_type=             # e.g. rtx_3090; empty = any
 partition=            # empty = cluster default
 auto_start=yes        # connecting from VS Code starts a session when none is running
+auto_start_cooldown=180 # ...but not within this many minutes after one ended other than by idle_timeout,
+                      # because VS Code keeps reconnecting by itself for hours (asd-dev start always works)
 idle_timeout=60       # minutes without any connection (and no tmux/screen) before the session stops; 0 = never
 docker_state=yes      # restore docker images/containers at start, save them when the session stops
 connect_wait=12       # seconds VS Code's connection waits for a starting session (VS Code gives up at 15)
@@ -252,37 +264,53 @@ read_state() {
     [[ -n $S_PORT && -n $S_NODE ]]
 }
 
-# Prints why the last session $1 (or, without $1, any session) ended, if it ended recently.
-explain_last_end() {
-    local name=${1:-} line id jobname state end reason=""
+# Finds how the last session $1 (or, without $1, any session) ended in the last 3 days.
+# Sets L_ID L_NAME L_KIND (idle|stop|timeout|cancel|fail|ending) L_TEXT L_WHEN L_AGE (minutes); returns 1 if none.
+last_end() {
+    local name=${1:-} line jobname state end end_s kind="" reason=""
+    L_ID="" L_NAME="" L_KIND="" L_TEXT="" L_WHEN="" L_AGE=0
     line=$(sacct -X -n -P -S now-3days -o JobID,JobName,State,End 2>/dev/null </dev/null |
         awk -F'|' -v p="$JOB_PREFIX" -v want="${name:+$(job_name "$name")}" '
-            $1 ~ /^[0-9]+$/ && $3 !~ /^(RUNNING|PENDING)/ && (want == "" ? ($2 == p || index($2, p "-") == 1) : $2 == want)' |
+            $1 ~ /^[0-9]+$/ && $3 !~ /^PENDING/ && (want == "" ? ($2 == p || index($2, p "-") == 1) : $2 == want)' |
         tail -n1 || true)
-    [[ -n $line ]] || return 0
-    IFS='|' read -r id jobname state end <<<"$line"
-    name=$(name_from_job_name "$jobname")
-    if [[ -f $SESSIONS/last-$name ]] && grep -q "^job=$id\$" "$SESSIONS/last-$name"; then
-        reason=$(sed -n 's/^reason=//p' "$SESSIONS/last-$name")
+    [[ -n $line ]] || return 1
+    IFS='|' read -r L_ID jobname state end <<<"$line"
+    L_NAME=$(name_from_job_name "$jobname")
+    if [[ -f $SESSIONS/last-$L_NAME ]] && grep -q "^job=$L_ID\$" "$SESSIONS/last-$L_NAME"; then
+        reason=$(sed -n 's/^reason=//p' "$SESSIONS/last-$L_NAME")
+        kind=$(sed -n 's/^kind=//p' "$SESSIONS/last-$L_NAME")
     fi
     case $state in
-        TIMEOUT*) reason=${reason:-"it reached its time limit"} ;;
-        CANCELLED*) reason=${reason:-"it was cancelled"} ;;
-        NODE_FAIL*) reason="its node failed" ;;
-        OUT_OF_ME*) reason="it ran out of memory (ask for more with: asd-dev start --mem 32G)" ;;
-        FAILED*) reason=${reason:-"it failed (see: asd-dev logs)"} ;;
-        COMPLETED*) reason=${reason:-"it stopped"} ;;
-        *) reason=${reason:-"state $state"} ;;
+        COMPLETED*) L_KIND=${kind:-stop} L_TEXT=${reason:-"it stopped"} ;;
+        TIMEOUT*) L_KIND=timeout L_TEXT="it reached its time limit" ;;
+        CANCELLED*) L_KIND=cancel L_TEXT="it was cancelled (asd-dev stop --now or scancel)" ;;
+        OUT_OF_ME*) L_KIND=fail L_TEXT="it ran out of memory (ask for more: asd-dev start --mem 32G)" ;;
+        NODE_FAIL*) L_KIND=fail L_TEXT="its node failed" ;;
+        PREEMPTED*) L_KIND=fail L_TEXT="SLURM preempted it" ;;
+        RUNNING* | COMPLETING*) L_KIND=ending L_TEXT="it is shutting down right now" ;;
+        *) L_KIND=fail L_TEXT="it ended with state $state (see: asd-dev logs $L_NAME)" ;;
     esac
-    say "Your last '$name' session (job $id) ended at $end UTC: $reason."
+    if end_s=$(date -u -d "$end" +%s 2>/dev/null); then
+        L_WHEN="at $(date -u -d "$end" '+%H:%M') UTC"
+        L_AGE=$((($(date +%s) - end_s) / 60))
+    fi
+}
+
+ago() { if (($1 < 1)); then echo "just now"; elif (($1 < 120)); then echo "$1 min ago"; else echo "$(($1 / 60)) h ago"; fi; }
+
+# Prints why the last session $1 (or any session) ended, if one ended recently.
+explain_last_end() {
+    last_end "${1:-}" || return 0
+    say "your last '$L_NAME' session (job $L_ID) ended $(ago "$L_AGE")${L_WHEN:+ ($L_WHEN)}: $L_TEXT."
 }
 
 # ---------------------------------------------------------------- starting and waiting
 
 submit_session() {
-    local name=$1 out args
+    local name=$1 started_by=$2 out args
     mkdir -p "$LOGS" "$SESSIONS"
     [[ -f $HOSTKEY ]] || die "the session host key $HOSTKEY is missing." "Run the setup script on your laptop again."
+    # shellcheck disable=SC2054 # the comma belongs to --export's value
     args=(
         --parsable
         --job-name="$(job_name "$name")"
@@ -294,10 +322,11 @@ submit_session() {
         --time="${CFG[time]}"
         --gres="$(gres_string)"
         --signal=B:USR1@600
+        --export=ALL,ASD_DEV_ROOT="$ROOT"
     )
     [[ -n ${CFG[partition]} ]] && args+=(--partition="${CFG[partition]}")
     if ! out=$(sbatch "${args[@]}" "$ROOT/bin/asd-dev" _job "$name" \
-        "idle_timeout=${CFG[idle_timeout]}" "docker_state=${CFG[docker_state]}" 2>&1 </dev/null); then
+        "idle_timeout=${CFG[idle_timeout]}" "docker_state=${CFG[docker_state]}" "started_by=$started_by" 2>&1 </dev/null); then
         die "SLURM rejected the session job:" "$out" "Requested: $(describe_resources)"
     fi
     J_ID=$(printf '%s\n' "$out" | grep -Eo '^[0-9]+' | tail -n1)
@@ -341,12 +370,12 @@ wait_ready() {
                 fi
                 if ((SECONDS - running_since > 90)); then
                     die "$msg after 90 seconds; the session did not come up." \
-                        "Its log: ~/.asd-dev/logs/$J_ID.log (or run: asd-dev logs)" \
+                        "Its log: $LOGS/$J_ID.log (or run: asd-dev logs)" \
                         "Then stop it with: asd-dev stop --job $J_ID"
                 fi
                 ;;
             GONE | COMPLETED | CANCELLED | FAILED | TIMEOUT | NODE_FAIL | PREEMPTED | OUT_OF_MEMORY | BOOT_FAIL | DEADLINE)
-                die "job $J_ID ended before it was ready ($J_STATE)." "Its log: ~/.asd-dev/logs/$J_ID.log (or run: asd-dev logs)"
+                die "job $J_ID ended before it was ready ($J_STATE)." "Its log: $LOGS/$J_ID.log (or run: asd-dev logs)"
                 ;;
             *) msg="job $J_ID is $J_STATE" ;;
         esac
@@ -364,7 +393,7 @@ wait_ready() {
 # Serializes "find or submit" so two VS Code windows connecting at once do not start two jobs.
 take_lock() {
     local f
-    f="${XDG_RUNTIME_DIR:-/tmp}/asd-dev-$(id -u).lock"
+    f="${XDG_RUNTIME_DIR:-/tmp}/asd-dev-$(id -u)-$(basename "$ROOT").lock"
     if { exec 9>>"$f"; } 2>/dev/null; then
         flock -w 20 9 || say "WARNING: could not lock $f; continuing without it"
     fi
@@ -381,15 +410,24 @@ cmd_proxy() {
     deadline=$((SECONDS + CFG[connect_wait]))
     take_lock
     if ! find_session_job "$name"; then
+        explain_last_end "$name"
         if [[ ${CFG[auto_start]} != yes ]]; then
             release_lock
-            explain_last_end "$name"
             die "you have no '$name' session running, so there is nothing to connect to." \
-                "Start one with: $(start_cmd "$name")   (on your laptop: ./$(start_cmd "$name"))" \
+                "Start one on your laptop with: ./$(start_cmd "$name")   (it opens VS Code when ready)" \
                 "or let VS Code start it for you: asd-dev config auto_start=yes"
         fi
-        explain_last_end "$name"
-        submit_session "$name"
+        # VS Code retries a lost connection for hours and reopens remote windows at launch; without
+        # this, a session ending by time limit or stop would be followed by job after job.
+        if [[ -n $L_ID && $L_KIND != idle ]] && ((L_AGE < CFG[auto_start_cooldown])); then
+            release_lock
+            die "not starting a new '$name' session by itself so soon after the last one ended:" \
+                "VS Code keeps reconnecting on its own, and each reconnect would book another job." \
+                "Start one yourself on your laptop: ./$(start_cmd "$name")   (it opens VS Code when ready)," \
+                "or on the login node: $(start_cmd "$name"), then click Retry. Connecting starts sessions by" \
+                "itself again ${CFG[auto_start_cooldown]} min after a session ends (asd-dev config auto_start_cooldown=...)."
+        fi
+        submit_session "$name" vscode
         say "no '$name' session was running, so I started one: job $J_ID ($(describe_resources))."
         say "It stops by itself after ${CFG[idle_timeout]} min with nothing connected; stop it sooner with: $(stop_cmd "$name")"
     fi
@@ -451,7 +489,7 @@ cmd_start() {
             say "It keeps the resources it was started with. To change them: $(stop_cmd "$NAME"), then start again."
         fi
     else
-        submit_session "$NAME"
+        submit_session "$NAME" start
         release_lock
         say "submitted job $J_ID: $(describe_resources)"
     fi
@@ -580,7 +618,7 @@ cmd_config() {
 cmd_install() {
     local src=$0 settings=() kv installed_serial
     for kv in "$@"; do settings+=("$kv"); done
-    installed_serial=$(sed -n 's/^ASD_DEV_SERIAL=\([0-9]*\)$/\1/p' "$ROOT/bin/asd-dev" 2>/dev/null | head -n1)
+    installed_serial=$(sed -n 's/^ASD_DEV_SERIAL=\([0-9]*\)$/\1/p' "$ROOT/bin/asd-dev" 2>/dev/null | head -n1 || true)
     if ((${installed_serial:-0} > ASD_DEV_SERIAL)) && [[ ${ASD_DEV_ALLOW_DOWNGRADE:-} != yes ]]; then
         printf 'ASD_DEV_NEWER_INSTALLED %s %s\n' "$(sed -n 's/^ASD_DEV_VERSION=//p' "$ROOT/bin/asd-dev" | head -n1)" "$ASD_DEV_VERSION"
         die "your cluster home has a newer asd-dev than this copy of wato_asd_tooling ($ASD_DEV_VERSION)." \
@@ -595,7 +633,7 @@ cmd_install() {
         mv -f "$ROOT/bin/asd-dev.new" "$ROOT/bin/asd-dev"
         [[ $src == "$ROOT/tmp/"* ]] && rm -f "$src"
     fi
-    printf '%s\n' "Files of wato_asd_tooling (asd-dev): VS Code dev sessions in SLURM jobs. Run ~/.asd-dev/bin/asd-dev help" >"$ROOT/README"
+    printf '%s\n' "Files of wato_asd_tooling (asd-dev): VS Code dev sessions in SLURM jobs. Run $ROOT/bin/asd-dev help" >"$ROOT/README"
     [[ -f $CONFIG ]] || create_default_config
     if ((${#settings[@]})); then
         load_config
@@ -770,14 +808,16 @@ write_state() {
     mv -f "$tmp" "$(state_file "$SLURM_JOB_ID")"
 }
 
-record_end() {
-    printf 'job=%s\nended=%s\nreason=%s\n' "$SLURM_JOB_ID" "$(date '+%F %T')" "$1" >"$SESSIONS/last-$SESSION_NAME"
+record_end() { # record_end REASON KIND
+    printf 'job=%s\nended=%s\nreason=%s\nkind=%s\n' "$SLURM_JOB_ID" "$(date '+%F %T')" "$1" "$2" \
+        >"$SESSIONS/last-$SESSION_NAME"
 }
 
-finish() {
+finish() { # finish REASON KIND
     local why=$1
     log "stopping: $why"
-    record_end "$why"
+    notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) is stopping: $why."
+    record_end "$why" "$2"
     rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop"
     kill "$SSHD_PID" 2>/dev/null || true
     if [[ $DOCKER_STATE == yes ]]; then
@@ -790,18 +830,25 @@ finish() {
 
 on_term() {
     log "SLURM is ending the job (time limit or scancel)"
-    record_end "it was ended by SLURM (time limit or cancel)"
+    notify_terminals "asd-dev: SLURM is ending this session now (time limit reached, or the job was cancelled)."
+    record_end "it was ended by SLURM (time limit or cancel)" slurm
     rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop"
     exit 143
 }
 
-# Writes a notice to the terminals of this job's processes (VS Code terminals, ssh sessions).
-notify_terminals() {
-    local cg pids tty
+# Prints the terminals (pts/N) of this job's processes: VS Code terminals and ssh sessions.
+job_terminals() {
+    local cg pids
     cg=$(sed -n 's/^0:://p' /proc/self/cgroup)
     pids=$(find "/sys/fs/cgroup${cg%%/step_*}" -name cgroup.procs -exec cat {} + 2>/dev/null | tr '\n' ',' || true)
     [[ -n $pids ]] || return 0
-    for tty in $(ps -o tty= -p "${pids%,}" 2>/dev/null | sort -u | grep '^pts/' || true); do
+    ps -o tty= -p "${pids%,}" 2>/dev/null | sort -u | grep '^pts/' || true
+}
+have_terminal() { [[ -n $(job_terminals) ]]; }
+
+notify_terminals() {
+    local tty
+    for tty in $(job_terminals); do
         printf '\r\n\033[1;33m%s\033[0m\n' "$1" >"/dev/$tty" 2>/dev/null || true
     done
 }
@@ -836,12 +883,13 @@ cmd_job() {
     SESSION_NAME=${1:-default}
     shift || true
     check_name "$SESSION_NAME"
-    local idle_timeout=60 kv
+    local idle_timeout=60 kv started_by=start
     DOCKER_STATE=yes
     for kv in "$@"; do
         case $kv in
             idle_timeout=*) idle_timeout=${kv#*=} ;;
             docker_state=*) DOCKER_STATE=${kv#*=} ;;
+            started_by=*) started_by=${kv#*=} ;;
         esac
     done
     unset SSH_AUTH_SOCK SSH_CLIENT SSH_CONNECTION SSH_TTY
@@ -878,7 +926,7 @@ cmd_job() {
         sleep 5 &
         wait $! || true
         if [[ -e $SESSIONS/$SLURM_JOB_ID.stop ]]; then
-            finish "stopped with 'asd-dev stop'"
+            finish "stopped with 'asd-dev stop'" stop
         fi
         if [[ $SAVE_REQUESTED == yes ]]; then
             SAVE_REQUESTED=no
@@ -888,15 +936,20 @@ cmd_job() {
         fi
         if ! kill -0 "$SSHD_PID" 2>/dev/null; then
             log "WARNING: sshd exited; restarting it on port $PORT"
-            start_sshd "$PORT" || finish "sshd could not be restarted"
+            start_sshd "$PORT" || finish "sshd could not be restarted" fail
         fi
         tick=$((tick + 1))
+        # Tell the user once, in the first terminal that appears, that VS Code booked this job.
+        if [[ $started_by == vscode ]] && ((tick % 6 == 0)) && have_terminal; then
+            started_by=notified
+            notify_terminals "asd-dev: VS Code started this session (job $SLURM_JOB_ID: ${SLURM_CPUS_ON_NODE:-?} CPUs, until $(date -u -d "@${SLURM_JOB_END_TIME:-0}" '+%H:%M') UTC) when it connected. It stops ${idle_timeout} min after the last connection closes; to stop it now: asd-dev stop"
+        fi
         if ((tick % 12 == 0)); then
             check_tmp_space
             if session_active; then
                 last_active=$SECONDS
             elif ((idle_timeout > 0 && SECONDS - last_active >= idle_timeout * 60)); then
-                finish "nothing was connected for $idle_timeout minutes (idle_timeout)"
+                finish "nothing was connected for $idle_timeout min (idle_timeout)" idle
             fi
         fi
     done
