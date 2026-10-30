@@ -48,8 +48,11 @@ agent; run setup with `--no-agent-forwarding` if you do not want that.
 
 In VS Code, open the **Remote Explorer** in the left bar, pick **SSH**, hover over
 **asd-dev-session** and click the arrow ("Connect in Current Window"). Or press F1, run
-**Remote-SSH: Connect to Host...** and choose `asd-dev-session`. If VS Code asks for the
-platform of the remote host, choose **Linux**.
+**Remote-SSH: Connect to Host...** and choose `asd-dev-session`.
+
+On Windows, the first connection asks for the platform of the remote host: choose **Linux**.
+The question can be hidden behind VS Code's welcome or sign-in dialog; if nothing seems to
+happen, close that dialog. (macOS and Linux detect the platform themselves.)
 
 If you have no session running, connecting starts one with your defaults (4 CPUs, 16 GB RAM,
 32 GiB of `/tmp`, no GPU, 6 hours). When the cluster has room this takes a few seconds; the
@@ -80,7 +83,8 @@ session is ready.
 ## 3. Stop
 
 A session stops by itself 60 minutes after the last connection to it closes (closing VS Code,
-or your laptop going to sleep), or when its time limit is reached. A running `tmux` or `screen`
+or your laptop going to sleep), or 5 minutes before its time limit (to save docker state; without
+docker state it runs to the limit). A running `tmux` or `screen`
 keeps it alive while you are disconnected. A VS Code window that stays open keeps the session
 running until its time limit, so close the window when you are done.
 
@@ -88,7 +92,10 @@ To stop it now, run `asd-dev stop` in the VS Code terminal, or `./asd-dev stop` 
 After you stop a session, connecting from VS Code does not start a new one for 3 hours (see
 step 2); run `./asd-dev start` when you want the next one sooner.
 Stopping saves your docker images and containers; the next session restores them. Saved docker
-state lives in `/mnt/wato-drive/slurm-docker-sessions/<your uid>/`.
+state lives in `/mnt/wato-drive/slurm-docker-sessions/<your uid>/`. If a saved state cannot be
+restored (for example because the new session has less `/tmp` than it needs), docker starts
+empty, saving is turned off for that session so the saved state is kept, and your terminal says
+how to start again with enough `/tmp`.
 
 ## Choosing resources (GPUs and more)
 
@@ -108,7 +115,9 @@ asd-dev config vram=8192 mem=32G         # or in the VS Code terminal
 ./asd-dev config                         # show the current defaults
 ```
 
-GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. `tmpdisk` is the job's `/tmp` in MiB
+GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. A GPU slice (`--vram`) is how
+much of a card SLURM reserves for you, not a limit: `nvidia-smi` shows the whole card and nothing
+stops a program from using more, so stay within what you asked for. `tmpdisk` is the job's `/tmp` in MiB
 (default 32768, i.e. 32 GiB), where docker keeps its images and containers. Two nodes have only about
 66 GiB to give, so asking for more than that (`--tmpdisk 67000` or above) can make you wait for the
 larger nodes. The session warns in your terminals when `/tmp` is 90% full. A running session keeps
