@@ -27,8 +27,16 @@ Usually you only need VS Code: connect to "asd-dev-session" and a session starts
 EOF
 }
 
+# The helper path from the session host's ProxyCommand (setup's --cluster-dir can change it).
+helper_path() {
+    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -G asd-dev-session 2>/dev/null </dev/null |
+        awk '$1 == "proxycommand" { for (i = 2; i <= NF; i++) if ($i ~ /\/bin\/asd-dev$/) { print $i; exit } }'
+}
+
 remote() { # runs the cluster helper with the given arguments
-    local cmd=".asd-dev/bin/asd-dev" a rc=0
+    local cmd a rc=0
+    cmd=$(helper_path)
+    cmd=${cmd:-.asd-dev/bin/asd-dev}
     for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
     ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} asd-dev-login "$cmd" || rc=$?
     if ((rc == 255)); then

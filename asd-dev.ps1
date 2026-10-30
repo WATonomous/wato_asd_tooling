@@ -29,11 +29,21 @@ Usually you only need VS Code: connect to "asd-dev-session" and a session starts
 '@ | Write-Host
 }
 
+# The helper path from the session host's ProxyCommand (setup's --cluster-dir can change it).
+function Get-HelperPath {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'  # 5.1 turns redirected native stderr into errors
+    try { $pc = & ssh.exe @SshArgs -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } | Select-Object -First 1 }
+    finally { $ErrorActionPreference = $old }
+    if ($pc -and ($pc -match '\s(\S+/bin/asd-dev)(\s|$)')) { return $Matches[1] }
+    return '.asd-dev/bin/asd-dev'
+}
+
 function Invoke-Remote([string[]]$words) {
     foreach ($w in $words) {
         if ($w -notmatch '^[A-Za-z0-9_:.=/+-]*$') { Write-Host "asd-dev: unsupported character in '$w'"; exit 1 }
     }
-    $cmd = '.asd-dev/bin/asd-dev ' + ($words -join ' ')
+    $cmd = (Get-HelperPath) + ' ' + ($words -join ' ')
     & ssh.exe @SshArgs asd-dev-login $cmd
     if ($LASTEXITCODE -eq 255) {
         [Console]::Error.WriteLine('asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN.')

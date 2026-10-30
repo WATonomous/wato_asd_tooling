@@ -47,6 +47,8 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
                      works too when the private key only lives in an SSH agent
   --login HOST       wato-login1 (default) or wato-login2
   --ssh-config FILE  ssh config file to write (default: %USERPROFILE%\.ssh\config, which VS Code reads)
+  --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
+                     independent install, e.g. to test another version)
   --yes              do not ask questions; use defaults and the values given
   -h, --help         show this help
 
@@ -58,7 +60,7 @@ Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the 
 
 # ---------------------------------------------------------------- arguments
 
-$ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $AssumeYes = $false
+$ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $ArgClusterDir = ''; $AssumeYes = $false
 $ClusterSettings = @()
 $settingNames = @('cpus', 'mem', 'time', 'tmpdisk', 'vram', 'gpus', 'gpu-type', 'idle-timeout', 'auto-start', 'docker-state')
 for ($i = 0; $i -lt $args.Count; $i++) {
@@ -79,6 +81,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         'key' { $ArgKey = $value }
         'login' { $ArgLogin = $value }
         'ssh-config' { $ArgConfig = $value }
+        'cluster-dir' { $ArgClusterDir = $value }
         default {
             if ($settingNames -notcontains $name) { Show-Usage; Fail "unknown option '$a'" }
             if ($value -notmatch '^[A-Za-z0-9_:.-]*$') { Fail "invalid value for ${a}: '$value'" }
@@ -142,7 +145,7 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         "    User $script:ClusterUser",
         "    IdentityFile $id",
         '    IdentitiesOnly yes',
-        "    ProxyCommand ssh$proxyF asd-dev-login .asd-dev/bin/asd-dev proxy %n",
+        "    ProxyCommand ssh$proxyF asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy %n",
         '    HostKeyAlias asd-dev-session',
         "    UserKnownHostsFile $kh",
         '    StrictHostKeyChecking yes',
@@ -220,6 +223,16 @@ function Write-KnownHosts([string]$file) {
     $keep += "asd-dev-session $script:HostKey"
     if ($script:LegacyHostKey) { $keep += "asd-dev-session $script:LegacyHostKey" }
     [System.IO.File]::WriteAllText($file, (($keep -join "`n") + "`n"), $Utf8NoBom)
+}
+
+function Previous-ClusterDir([string]$config) {
+    $inBlock = $false
+    foreach ($l in @(Read-Lines $config)) {
+        if ($l -eq $BlockBegin) { $inBlock = $true; continue }
+        if ($l -eq $BlockEnd) { break }
+        if ($inBlock -and $l -match '^\s*ProxyCommand\s.*\s(\S+)/bin/asd-dev\s') { return $Matches[1] }
+    }
+    return ''
 }
 
 function Previous-Value([string]$config, [string]$keyword) {
@@ -314,6 +327,11 @@ if (-not (Test-Path -LiteralPath $Key)) { Fail "key file '$Key' does not exist."
 $Key = (Resolve-Path -LiteralPath $Key).Path
 if ($Key.EndsWith('.pub')) { Info "Using the public key ${Key}: ssh will ask your SSH agent to sign with it." }
 
+# --- helper directory in the cluster home
+$script:ClusterDir = if ($ArgClusterDir) { $ArgClusterDir } else { Previous-ClusterDir $Config }
+if (-not $script:ClusterDir) { $script:ClusterDir = '.asd-dev' }
+if ($script:ClusterDir -notmatch '^[A-Za-z0-9._-]+$') { Fail '--cluster-dir must be a plain directory name in your cluster home, like .asd-dev' }
+
 # --- login node
 $login = if ($ArgLogin) { $ArgLogin } else { (Previous-Value $Config 'HostName') -replace '\..*$', '' }
 if (-not $login) { $login = 'wato-login1' }
@@ -363,7 +381,7 @@ try {
     Ok "  logged in as $($whoami.Trim())"
 
     # --- install the cluster helper (scp copies the bytes as they are; the cluster strips CRs)
-    Step 'Installing the session helper in your cluster home (~/.asd-dev)'
+    Step "Installing the session helper in your cluster home (~/$($script:ClusterDir))"
     # A relative source path: some scp builds read "C:\..." as host "C".
     Push-Location -LiteralPath $RepoDir
     try { $r = Invoke-Native $Scp @('-q', '-F', $tmpCfg, 'cluster/asd-dev', 'asd-dev-login:.asd-dev-upload') }
@@ -371,7 +389,8 @@ try {
     if ($r.Code -ne 0) { Fail "copying the helper to the cluster failed (exit code $($r.Code)):" @($r.Text) }
     $settings = ''
     foreach ($s in $ClusterSettings) { $settings += " $s" }
-    $remote = "mkdir -p .asd-dev/tmp && tr -d '\r' < .asd-dev-upload > .asd-dev/tmp/asd-dev.new && rm -f .asd-dev-upload && bash .asd-dev/tmp/asd-dev.new install$settings"
+    $d = $script:ClusterDir
+    $remote = "mkdir -p $d/tmp && tr -d '\r' < .asd-dev-upload > $d/tmp/asd-dev.new && rm -f .asd-dev-upload && bash $d/tmp/asd-dev.new install$settings"
     $r = Invoke-Native $Ssh @('-F', $tmpCfg, 'asd-dev-login', $remote)
     if ($r.Text -match 'ASD_DEV_NEWER_INSTALLED') {
         Fail 'your cluster home already has a newer asd-dev than this copy of wato_asd_tooling.' @(
@@ -398,7 +417,7 @@ Write-KnownHosts $Known
 Install-Block $Config (Make-Block $Key $Known $ProxyConfig)
 $r = Invoke-Native $Ssh @('-F', $Config, '-G', 'asd-dev-session')
 if ($r.Code -ne 0) { Fail "ssh cannot parse $Config after the change." @($r.Text, "Your previous file is in $Config.asd-dev-backup-*.") }
-$r = Invoke-Native $Ssh @('-F', $Config, 'asd-dev-login', '.asd-dev/bin/asd-dev version')
+$r = Invoke-Native $Ssh @('-F', $Config, 'asd-dev-login', "$($script:ClusterDir)/bin/asd-dev version")
 if ($r.Code -ne 0) { Fail 'the new config does not work for the login node:' @($r.Text) }
 Ok "  checked: 'ssh asd-dev-login' works with the new config"
 

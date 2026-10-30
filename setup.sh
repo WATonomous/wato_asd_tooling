@@ -43,6 +43,8 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --login HOST       wato-login1 (default) or wato-login2
   --ssh-config FILE  ssh config file to write (default: the one VS Code reads)
   --no-windows       on WSL: do not also configure Windows (where VS Code runs)
+  --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
+                     independent install, e.g. to test another version)
   --yes              do not ask questions; use defaults and the values given
   -h, --help         show this help
 
@@ -54,7 +56,7 @@ EOF
 
 # ---------------------------------------------------------------- arguments
 
-ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ASSUME_YES=no DO_WINDOWS=yes
+ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ARG_CLUSTER_DIR="" ASSUME_YES=no DO_WINDOWS=yes
 CLUSTER_SETTINGS=()
 add_setting() {
     [[ $2 =~ ^[A-Za-z0-9_:.-]*$ ]] || fail "invalid value for --$1: '$2'"
@@ -66,6 +68,7 @@ while (($#)); do
         --key) ARG_KEY=${2:?--key needs a value}; shift ;;
         --login) ARG_LOGIN=${2:?--login needs a value}; shift ;;
         --ssh-config) ARG_CONFIG=${2:?--ssh-config needs a value}; shift ;;
+        --cluster-dir) ARG_CLUSTER_DIR=${2:?--cluster-dir needs a value}; shift ;;
         --no-windows) DO_WINDOWS=no ;;
         --yes | -y) ASSUME_YES=yes ;;
         --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --idle-timeout | --auto-start | --docker-state)
@@ -156,6 +159,7 @@ ssh_quote() { # quotes a config value if needed
 
 LOGIN_HOSTNAME=""
 CLUSTER_USER=""
+CLUSTER_DIR=.asd-dev
 
 # make_block IDENTITY KNOWN_HOSTS PROXY_CONFIG(empty = default config)
 make_block() {
@@ -182,7 +186,7 @@ Host asd-dev-session asd-dev-session-*
     User $CLUSTER_USER
     IdentityFile $identity
     IdentitiesOnly yes
-    ProxyCommand ssh$proxy_f asd-dev-login .asd-dev/bin/asd-dev proxy %n
+    ProxyCommand ssh$proxy_f asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy %n
     HostKeyAlias asd-dev-session
     UserKnownHostsFile $known
     StrictHostKeyChecking yes
@@ -266,6 +270,15 @@ previous_value() { # previous_value CONFIG KEYWORD: value from our block's asd-d
         $0 == b { inb = 1; next } $0 == e { inb = 0 }
         inb && tolower($1) == "host" { inlogin = ($2 ~ /^asd-dev-login/) }
         inb && inlogin && tolower($1) == k { $1 = ""; sub(/^ +/, ""); gsub(/"/, ""); print; exit }' "$1"
+}
+
+previous_cluster_dir() { # the helper dir in our block's ProxyCommand
+    [[ -f $1 ]] || return 0
+    awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        $0 == b { inb = 1; next } $0 == e { inb = 0 }
+        inb && tolower($1) == "proxycommand" {
+            for (i = 2; i <= NF; i++) if ($i ~ /\/bin\/asd-dev$/) { sub(/\/bin\/asd-dev$/, "", $i); print $i; exit }
+        }' "$1"
 }
 
 legacy_session_value() { # value of an export in the old session_config.sh, unless it is a placeholder
@@ -369,6 +382,11 @@ main() {
         warn "$key.pub is missing; that is fine as long as $key is the private key."
     fi
 
+    # --- helper directory in the cluster home
+    CLUSTER_DIR=${ARG_CLUSTER_DIR:-$(previous_cluster_dir "$config")}
+    CLUSTER_DIR=${CLUSTER_DIR:-.asd-dev}
+    [[ $CLUSTER_DIR =~ ^[A-Za-z0-9._-]+$ ]] || fail "--cluster-dir must be a plain directory name in your cluster home, like .asd-dev"
+
     # --- login node
     local login=${ARG_LOGIN:-$(previous_value "$config" hostname)}
     login=${login%%.*}
@@ -434,12 +452,12 @@ main() {
     ok "  logged in as $whoami"
 
     # --- install the cluster helper
-    step "Installing the session helper in your cluster home (~/.asd-dev)"
+    step "Installing the session helper in your cluster home (~/$CLUSTER_DIR)"
     local settings_str="" s
     for s in ${CLUSTER_SETTINGS[@]+"${CLUSTER_SETTINGS[@]}"}; do settings_str+=" $s"; done
     set +o errexit
     out=$(ssh -F "$TMPCFG" asd-dev-login \
-        "mkdir -p .asd-dev/tmp && tr -d '\\r' > .asd-dev/tmp/asd-dev.new && bash .asd-dev/tmp/asd-dev.new install$settings_str" \
+        "mkdir -p $CLUSTER_DIR/tmp && tr -d '\\r' > $CLUSTER_DIR/tmp/asd-dev.new && bash $CLUSTER_DIR/tmp/asd-dev.new install$settings_str" \
         <"$HELPER" 2>&1)
     rc=$?
     set -o errexit
@@ -463,7 +481,7 @@ main() {
     ssh -F "$config" -G asd-dev-session >/dev/null 2>&1 ||
         fail "ssh cannot parse $config after the change." "Your previous file is in $config.asd-dev-backup-*."
     set +o errexit
-    out=$(ssh -F "$config" asd-dev-login '.asd-dev/bin/asd-dev version' 2>&1 </dev/null)
+    out=$(ssh -F "$config" asd-dev-login "$CLUSTER_DIR/bin/asd-dev version" 2>&1 </dev/null)
     rc=$?
     set -o errexit
     ((rc == 0)) || fail "the new config does not work for the login node:" "$out"
