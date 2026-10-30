@@ -188,17 +188,19 @@ Host asd-dev-login*
     UserKnownHostsFile $known
     StrictHostKeyChecking accept-new
     ConnectTimeout 10
+    ForwardAgent no
     ServerAliveInterval 15
     ServerAliveCountMax 4
 
 # %h is the name as typed (HostName %h keeps a "HostName" under "Host *" from applying);
-# Windows 10's OpenSSH 7.7 does not know the %n token.
+# Windows 10's OpenSSH 7.7 does not know the %n token. The quotes keep a crafted host name away from
+# the local shell on clients older than OpenSSH 9.6 (Windows passes them on; the login shell strips them).
 Host asd-dev-session asd-dev-session-*
     HostName %h
     User $CLUSTER_USER
     IdentityFile $identity
     IdentitiesOnly yes
-    ProxyCommand ssh$proxy_f -T asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy %h$RC_NONE
+    ProxyCommand ssh$proxy_f -T asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy '%h'$RC_NONE
     HostKeyAlias asd-dev-session
     UserKnownHostsFile $known
     StrictHostKeyChecking yes
@@ -216,15 +218,19 @@ EOF
 install_block() {
     local config=$1 block=$2 dir tmp legacy
     dir=$(dirname "$config")
-    mkdir -p "$dir"
-    chmod 700 "$dir" 2>/dev/null || true
+    if [[ ! -d $dir ]]; then
+        mkdir -p "$dir"
+        chmod 700 "$dir"
+    fi
     [[ -e $config ]] || { : >"$config"; chmod 600 "$config"; }
     tmp=$(mktemp "${TMPDIR:-/tmp}/asd-dev-config.XXXXXX")
 
     # Old start_interactive_session.sh setups added their own "Host asd-dev-session" block.
+    # The awk scripts compare lines without a trailing CR, so CRLF files (Windows) work too.
     legacy=$(awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
-        $0 == b { inb = 1 } $0 == e { inb = 0; next }
-        !inb && tolower($0) ~ /^[ \t]*host[ \t=].*asd-dev-session/ { print NR": "$0 }' "$config")
+        { l = $0; sub(/\r$/, "", l) }
+        l == b { inb = 1 } l == e { inb = 0; next }
+        !inb && tolower(l) ~ /^[ \t]*host[ \t=].*asd-dev-session/ { print NR": "l }' "$config")
     local disable=no
     if [[ -n $legacy ]]; then
         warn "$config has an older asd-dev-session entry (from the previous tooling):"
@@ -235,11 +241,12 @@ install_block() {
     {
         printf '%s\n\n' "$block"
         awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v disable="$disable" '
-            $0 == b { inb = 1; next }
-            inb { if ($0 == e) { inb = 0; skipblank = 1 } next }
-            skipblank && $0 ~ /^[ \t]*$/ { next }
+            { l = $0; sub(/\r$/, "", l) }
+            l == b { inb = 1; next }
+            inb { if (l == e) { inb = 0; skipblank = 1 } next }
+            skipblank && l ~ /^[ \t]*$/ { next }
             { skipblank = 0 }
-            disable == "yes" && tolower($0) ~ /^[ \t]*(host|match)[ \t=]/ { inlegacy = (tolower($0) ~ /^[ \t]*host[ \t=].*asd-dev-session/) }
+            disable == "yes" && tolower(l) ~ /^[ \t]*(host|match)[ \t=]/ { inlegacy = (tolower(l) ~ /^[ \t]*host[ \t=].*asd-dev-session/) }
             inlegacy { print "# [disabled by asd-dev setup] " $0; next }
             { print }' "$config"
     } >"$tmp"
@@ -254,6 +261,9 @@ install_block() {
         backup="$config.asd-dev-backup-$(date '+%Y%m%d-%H%M%S')"
         cp -p "$config" "$backup"
         info "  backed up the old file to $backup"
+        # Keep the three newest backups.
+        # shellcheck disable=SC2012 # names we created, newest first
+        ls -t "$config".asd-dev-backup-* 2>/dev/null | tail -n +4 | while IFS= read -r old; do rm -f "$old"; done
     fi
     # Write in place: keeps a symlinked config (dotfile managers) and its permissions.
     cat "$tmp" >"$config"
@@ -279,6 +289,7 @@ write_known_hosts() {
 previous_value() { # previous_value CONFIG KEYWORD: value from our block's asd-dev-login entry
     [[ -f $1 ]] || return 0
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v k="$2" '
+        { sub(/\r$/, "") }
         $0 == b { inb = 1; next } $0 == e { inb = 0 }
         inb && tolower($1) == "host" { inlogin = ($2 ~ /^asd-dev-login/) }
         inb && inlogin && tolower($1) == k { $1 = ""; sub(/^ +/, ""); gsub(/"/, ""); print; exit }' "$1"
@@ -287,13 +298,16 @@ previous_value() { # previous_value CONFIG KEYWORD: value from our block's asd-d
 previous_forward_agent() { # ForwardAgent in our block's session entry
     [[ -f $1 ]] || return 0
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        { sub(/\r$/, "") }
         $0 == b { inb = 1; next } $0 == e { inb = 0 }
-        inb && tolower($1) == "forwardagent" { print tolower($2); exit }' "$1"
+        inb && tolower($1) == "host" { insession = ($2 == "asd-dev-session") }
+        inb && insession && tolower($1) == "forwardagent" { print tolower($2); exit }' "$1"
 }
 
 previous_cluster_dir() { # the helper dir in our block's ProxyCommand
     [[ -f $1 ]] || return 0
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        { sub(/\r$/, "") }
         $0 == b { inb = 1; next } $0 == e { inb = 0 }
         inb && tolower($1) == "proxycommand" {
             for (i = 2; i <= NF; i++) if ($i ~ /\/bin\/asd-dev$/) { sub(/\/bin\/asd-dev$/, "", $i); print $i; exit }

@@ -144,17 +144,19 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         "    UserKnownHostsFile $kh",
         '    StrictHostKeyChecking accept-new',
         '    ConnectTimeout 10',
+        '    ForwardAgent no',
         '    ServerAliveInterval 15',
         '    ServerAliveCountMax 4',
         '',
         '# %h is the name as typed (HostName %h keeps a "HostName" under "Host *" from applying);',
-        "# Windows 10's OpenSSH 7.7 does not know the %n token.",
+        "# Windows 10's OpenSSH 7.7 does not know the %n token. The quotes keep a crafted host name away from",
+        '# the local shell on clients older than OpenSSH 9.6 (Windows passes them on; the login shell strips them).',
         'Host asd-dev-session asd-dev-session-*',
         '    HostName %h',
         "    User $script:ClusterUser",
         "    IdentityFile $id",
         '    IdentitiesOnly yes',
-        "    ProxyCommand ssh$proxyF -T asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy %h",
+        "    ProxyCommand ssh$proxyF -T asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy '%h'",
         $script:RcNone,
         '    HostKeyAlias asd-dev-session',
         "    UserKnownHostsFile $kh",
@@ -221,6 +223,9 @@ function Install-Block([string]$config, [string]$block) {
             $backup = "$config.asd-dev-backup-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
             Copy-Item -LiteralPath $config -Destination $backup
             Info "  backed up the old file to $backup"
+            # Keep the three newest backups.
+            Get-ChildItem -LiteralPath (Split-Path -Parent $config) -Filter ((Split-Path -Leaf $config) + '.asd-dev-backup-*') |
+                Sort-Object LastWriteTime -Descending | Select-Object -Skip 3 | Remove-Item -ErrorAction SilentlyContinue
         }
     }
     # UTF-8 without BOM: Windows' ssh cannot read UTF-16 or a BOM.
@@ -342,10 +347,12 @@ if ($Key.EndsWith('.pub')) { Info "Using the public key ${Key}: ssh will ask you
 
 $prevForward = ''
 $inBlock = $false
+$inSession = $false
 foreach ($l in @(Read-Lines $Config)) {
     if ($l -eq $BlockBegin) { $inBlock = $true; continue }
     if ($l -eq $BlockEnd) { break }
-    if ($inBlock -and $l -match '^\s*ForwardAgent\s+(\S+)') { $prevForward = $Matches[1].ToLowerInvariant(); break }
+    if ($inBlock -and $l -match '^\s*Host\s') { $inSession = ($l -match '^\s*Host\s+asd-dev-session(\s|$)') }
+    if ($inBlock -and $inSession -and $l -match '^\s*ForwardAgent\s+(\S+)') { $prevForward = $Matches[1].ToLowerInvariant(); break }
 }
 $script:ForwardAgent = if ($ArgForward) { $ArgForward } elseif ($prevForward -eq 'no') { 'no' } else { 'yes' }
 
