@@ -134,8 +134,9 @@ On your computer (`.\asd-dev.cmd` on Windows) or, without the `./`, in a session
 
 ## Troubleshooting
 
-When VS Code cannot connect, open the Output panel (View > Output), pick **Remote - SSH**, and
-look for lines starting with `asd-dev:`. Most problems are one of these:
+When VS Code cannot connect, its dialog often says only "An unknown error occurred". Open the
+Output panel (View > Output), pick **Remote - SSH**, and look for lines starting with `asd-dev:`;
+they say what happened. Most problems are one of these:
 
 | You see | What to do |
 | --- | --- |
