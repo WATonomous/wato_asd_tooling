@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
 $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$SshArgs = @('-o', 'ConnectTimeout=20')
+$SshArgs = @()
 if ($env:ASD_DEV_SSH_CONFIG) { $SshArgs += @('-F', $env:ASD_DEV_SSH_CONFIG) }
 
 function Show-Usage {
@@ -35,6 +35,10 @@ function Invoke-Remote([string[]]$words) {
     }
     $cmd = '.asd-dev/bin/asd-dev ' + ($words -join ' ')
     & ssh.exe @SshArgs asd-dev-login $cmd
+    if ($LASTEXITCODE -eq 255) {
+        [Console]::Error.WriteLine('asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN.')
+        [Console]::Error.WriteLine('         Permission denied or an unknown host? Run .\setup.cmd again.')
+    }
 }
 
 function Get-Alias([string]$name) { if (-not $name -or $name -eq 'default') { 'asd-dev-session' } else { "asd-dev-session-$name" } }

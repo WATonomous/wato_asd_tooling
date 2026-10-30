@@ -14,6 +14,9 @@ if no session is running, connecting starts one.
   [WATcloud profile](https://cloud.watonomous.ca/docs/utilities/profile-editor), the name you
   use in `ssh <username>@wato-login1.ext.watonomous.ca`. It can differ from your WATcloud username.
 - The SSH key registered in that profile is on this computer (usually `~/.ssh/id_ed25519`).
+- You are on the UW campus network or connected to the
+  [UW VPN](https://uwaterloo.ca/information-systems-technology/services/virtual-private-network-vpn).
+  The WATcloud login nodes accept no other connections, so setup and every connection need it.
 - [VS Code](https://code.visualstudio.com/) with the
   [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
   extension is installed.
@@ -45,7 +48,7 @@ In VS Code, open the **Remote Explorer** in the left bar, pick **SSH**, hover ov
 platform of the remote host, choose **Linux**.
 
 If you have no session running, connecting starts one with your defaults (4 CPUs, 16 GB RAM,
-no GPU, 6 hours). When the cluster has room this takes a few seconds; the first connection
+32 GiB of `/tmp`, no GPU, 6 hours). When the cluster has room this takes a few seconds; the first connection
 also installs VS Code's server in your cluster home, which takes a minute.
 
 Then open a folder (for example `~/wato_monorepo`) and a terminal. `docker` works there; the
@@ -85,9 +88,11 @@ asd-dev config vram=8192 mem=32G         # or in the VS Code terminal
 ./asd-dev config                         # show the current defaults
 ```
 
-GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. `tmpdisk` is the job's `/tmp` in MiB,
-where docker keeps its images; give it room if you use large images. A running session keeps its
-resources; to change them, stop it and start again. The meaning of every setting is in
+GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. `tmpdisk` is the job's `/tmp` in MiB
+(default 32768, i.e. 32 GiB), where docker keeps its images and containers. Two nodes have only about
+66 GiB to give, so asking for more than that (`--tmpdisk 67000` or above) can make you wait for the
+larger nodes. The session warns in your terminals when `/tmp` is 90% full. A running session keeps
+its resources; to change them, stop it and start again. The meaning of every setting is in
 `~/.asd-dev/config` on the cluster.
 
 ## More than one session
@@ -118,6 +123,7 @@ look for lines starting with `asd-dev:`. Most problems are one of these:
 
 | You see | What to do |
 | --- | --- |
+| `Connection timed out` (for `wato-login1.ext.watonomous.ca`) | You are off campus without the UW VPN. Connect to the VPN and retry. |
 | `Permission denied (publickey)` | Wrong username or a key that is not registered. Run setup again; it checks both. |
 | `asd-dev: job N is waiting ...` | The cluster is busy. Click Retry later, or run `./asd-dev start` to wait for it. |
 | `asd-dev: ... held back by your per-user limit` | Your other jobs use your share (`squeue --me` on the login node). Stop some, or ask for less. |

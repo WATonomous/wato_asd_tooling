@@ -11,6 +11,7 @@ $Helper = Join-Path $RepoDir 'cluster\asd-dev'
 $BlockBegin = '# >>> asd-dev (wato_asd_tooling) >>>'
 $BlockEnd = '# <<< asd-dev (wato_asd_tooling) <<<'
 $ProfileUrl = 'https://cloud.watonomous.ca/docs/utilities/profile-editor'
+$VpnUrl = 'https://uwaterloo.ca/information-systems-technology/services/virtual-private-network-vpn'
 
 function Info($msg) { Write-Host $msg }
 function Step($msg) { Write-Host ''; Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -133,6 +134,7 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         '    IdentitiesOnly yes',
         "    UserKnownHostsFile $kh",
         '    StrictHostKeyChecking accept-new',
+        '    ConnectTimeout 10',
         '    ServerAliveInterval 15',
         '    ServerAliveCountMax 4',
         '',
@@ -323,7 +325,7 @@ Step "Checking that you can log in to $login as $($script:ClusterUser)"
 $tmpCfg = [System.IO.Path]::GetTempFileName()
 try {
     [System.IO.File]::WriteAllText($tmpCfg, (Make-Block $Key $Known $tmpCfg), $Utf8NoBom)
-    $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-o', 'ConnectTimeout=20', 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
+    $r = Invoke-Native $Ssh @('-F', $tmpCfg, 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
     if ($r.Text -notmatch 'ASD_DEV_LOGIN_OK') {
         $detail = (($r.Text -split "`n") | Select-Object -Last 3) -join ' / '
         if ($r.Text -match 'Permission denied') {
@@ -336,10 +338,18 @@ try {
                 "ssh said: $detail")
         } elseif ($r.Text -match 'not available') {
             Fail "your account on $login is locked (it may have expired)." @('Ask your WATcloud contact to renew it.', "ssh said: $detail")
-        } elseif ($r.Text -match 'Could not resolve|timed out|No route|refused|unreachable') {
+        } elseif ($r.Text -match 'timed out|No route|unreachable') {
             Fail "could not reach $($script:LoginHostName)." @(
-                'Check your internet connection, or try the other login node: .\setup.cmd --login wato-login2',
-                'Status of WATcloud machines: https://status.watonomous.ca', "ssh said: $detail")
+                'The WATcloud login nodes only accept connections from the UW campus network or the UW VPN.',
+                "Off campus? Connect to the UW VPN ($VpnUrl) and run setup again.",
+                'On campus or on the VPN already? Try the other login node: .\setup.cmd --login wato-login2',
+                "ssh said: $detail")
+        } elseif ($r.Text -match 'Could not resolve') {
+            Fail "could not look up $($script:LoginHostName); check your internet connection." @("ssh said: $detail")
+        } elseif ($r.Text -match 'refused') {
+            Fail "$login refused the connection; it may be down." @(
+                'Try the other login node: .\setup.cmd --login wato-login2. Status: https://status.watonomous.ca',
+                "ssh said: $detail")
         } elseif ($r.Text -match 'UNPROTECTED|bad permissions|too open') {
             Fail "Windows' ssh refuses to use $Key because other users can read it." @(
                 'Fix the file permissions in PowerShell, then run setup again:',
@@ -362,7 +372,7 @@ try {
     $settings = ''
     foreach ($s in $ClusterSettings) { $settings += " $s" }
     $remote = "mkdir -p .asd-dev/tmp && tr -d '\r' < .asd-dev-upload > .asd-dev/tmp/asd-dev.new && rm -f .asd-dev-upload && bash .asd-dev/tmp/asd-dev.new install$settings"
-    $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-o', 'ConnectTimeout=20', 'asd-dev-login', $remote)
+    $r = Invoke-Native $Ssh @('-F', $tmpCfg, 'asd-dev-login', $remote)
     if ($r.Text -match 'ASD_DEV_NEWER_INSTALLED') {
         Fail 'your cluster home already has a newer asd-dev than this copy of wato_asd_tooling.' @(
             'Update this copy (git pull, or download it again) and run setup.cmd again.')
@@ -388,7 +398,7 @@ Write-KnownHosts $Known
 Install-Block $Config (Make-Block $Key $Known $ProxyConfig)
 $r = Invoke-Native $Ssh @('-F', $Config, '-G', 'asd-dev-session')
 if ($r.Code -ne 0) { Fail "ssh cannot parse $Config after the change." @($r.Text, "Your previous file is in $Config.asd-dev-backup-*.") }
-$r = Invoke-Native $Ssh @('-F', $Config, '-o', 'ConnectTimeout=20', 'asd-dev-login', '.asd-dev/bin/asd-dev version')
+$r = Invoke-Native $Ssh @('-F', $Config, 'asd-dev-login', '.asd-dev/bin/asd-dev version')
 if ($r.Code -ne 0) { Fail 'the new config does not work for the login node:' @($r.Text) }
 Ok "  checked: 'ssh asd-dev-login' works with the new config"
 

@@ -5,7 +5,7 @@
 set -o errexit -o nounset -o pipefail
 
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-SSH_ARGS=(-o ConnectTimeout=20)
+SSH_ARGS=()
 if [[ -n ${ASD_DEV_SSH_CONFIG:-} ]]; then SSH_ARGS+=(-F "$ASD_DEV_SSH_CONFIG"); fi
 
 usage() {
@@ -28,9 +28,14 @@ EOF
 }
 
 remote() { # runs the cluster helper with the given arguments
-    local cmd=".asd-dev/bin/asd-dev" a
+    local cmd=".asd-dev/bin/asd-dev" a rc=0
     for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
-    ssh "${SSH_ARGS[@]}" asd-dev-login "$cmd"
+    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} asd-dev-login "$cmd" || rc=$?
+    if ((rc == 255)); then
+        echo "asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN." >&2
+        echo "         Permission denied or an unknown host? Run ./setup.sh again." >&2
+    fi
+    return "$rc"
 }
 
 alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; else printf 'asd-dev-session-%s' "$1"; fi; }
@@ -38,7 +43,7 @@ alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; el
 open_code() { # open_code HOST_ALIAS FOLDER
     local alias=$1 folder=$2 user
     if [[ -z $folder ]]; then
-        user=$(ssh "${SSH_ARGS[@]}" -G "$alias" 2>/dev/null | awk '$1 == "user" { print $2; exit }')
+        user=$(ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -G "$alias" 2>/dev/null </dev/null | awk '$1 == "user" { print $2; exit }')
         folder="/home/$user"
     fi
     local uri="vscode-remote://ssh-remote+$alias$folder"
@@ -88,7 +93,7 @@ cmd_code() {
 cmd_ssh() {
     local name=""
     if (($#)) && [[ $1 != -* ]]; then name=$1; shift; fi
-    exec ssh "${SSH_ARGS[@]}" "$(alias_for "$name")" "$@"
+    exec ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$(alias_for "$name")" "$@"
 }
 
 main() {

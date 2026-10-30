@@ -11,6 +11,7 @@ HELPER="$REPO_DIR/cluster/asd-dev"
 BLOCK_BEGIN="# >>> asd-dev (wato_asd_tooling) >>>"
 BLOCK_END="# <<< asd-dev (wato_asd_tooling) <<<"
 PROFILE_URL="https://cloud.watonomous.ca/docs/utilities/profile-editor"
+VPN_URL="https://uwaterloo.ca/information-systems-technology/services/virtual-private-network-vpn"
 
 if [[ -t 1 ]]; then
     C_RED=$'\033[0;31m' C_YEL=$'\033[0;33m' C_GRN=$'\033[0;32m' C_BOLD=$'\033[1m' C_OFF=$'\033[0m'
@@ -173,6 +174,7 @@ Host asd-dev-login*
     IdentitiesOnly yes
     UserKnownHostsFile $known
     StrictHostKeyChecking accept-new
+    ConnectTimeout 10
     ServerAliveInterval 15
     ServerAliveCountMax 4
 
@@ -294,8 +296,10 @@ main() {
     sshdir="$home/.ssh"
     config=${ARG_CONFIG:-"$sshdir/config"}
     if [[ -n $ARG_CONFIG ]]; then
-        config=$(cd "$(dirname "$ARG_CONFIG")" 2>/dev/null && pwd)/$(basename "$ARG_CONFIG") ||
+        local cdir
+        cdir=$(cd "$(dirname "$ARG_CONFIG")" 2>/dev/null && pwd) ||
             fail "the directory of --ssh-config $ARG_CONFIG does not exist."
+        config="$cdir/$(basename "$ARG_CONFIG")"
         sshdir=$(dirname "$config")
         [[ $config != "$home/.ssh/config" ]] && proxy_f=$config
     fi
@@ -329,8 +333,15 @@ main() {
     local key def_key="" candidates=() f
     def_key=${ARG_KEY:-$(previous_value "$config" identityfile)}
     def_key=${def_key:-$(legacy_session_value SSH_KEY)}
-    for f in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_ecdsa" "$HOME/.ssh/id_rsa" "$sshdir/id_ed25519" "$sshdir/id_ecdsa" "$sshdir/id_rsa"; do
-        [[ -f $f && -f $f.pub ]] && candidates+=("$f")
+    local d n c dup
+    for d in "$HOME/.ssh" "$sshdir"; do
+        for n in id_ed25519 id_ecdsa id_rsa; do
+            f="$d/$n"
+            [[ -f $f && -f $f.pub ]] || continue
+            dup=no
+            for c in ${candidates[@]+"${candidates[@]}"}; do [[ $c -ef $f ]] && dup=yes; done
+            [[ $dup == no ]] && candidates+=("$f")
+        done
     done
     if [[ -z $def_key && ${#candidates[@]} -gt 0 ]]; then def_key=${candidates[0]}; fi
     if [[ -z $ARG_KEY ]]; then
@@ -381,7 +392,7 @@ main() {
     # shellcheck disable=SC2094 # only the file name is used, not its content
     make_block "$nkey" "$nknown" "$(native_path "$TMPCFG" $pathstyle)" >"$TMPCFG"
     set +o errexit
-    out=$(ssh -F "$TMPCFG" -o ConnectTimeout=20 asd-dev-login 'echo ASD_DEV_LOGIN_OK $(id -un)' 2>&1 </dev/null)
+    out=$(ssh -F "$TMPCFG" asd-dev-login 'echo ASD_DEV_LOGIN_OK $(id -un)' 2>&1 </dev/null)
     rc=$?
     set -o errexit
     if [[ $out != *ASD_DEV_LOGIN_OK* ]]; then
@@ -399,10 +410,19 @@ main() {
                 ;;
             *"not available"*)
                 fail "your account on $login is locked (it may have expired)." "Ask your WATcloud contact to renew it." "ssh said: $detail" ;;
-            *"Could not resolve"* | *"timed out"* | *"No route"* | *"Connection refused"* | *"Network is unreachable"*)
+            *"timed out"* | *"No route"* | *"Network is unreachable"*)
                 fail "could not reach $LOGIN_HOSTNAME." \
-                    "Check your internet connection, or try the other login node: ./setup.sh --login wato-login2" \
-                    "Status of WATcloud machines: https://status.watonomous.ca" "ssh said: $detail"
+                    "The WATcloud login nodes only accept connections from the UW campus network or the UW VPN." \
+                    "Off campus? Connect to the UW VPN ($VPN_URL) and run setup again." \
+                    "On campus or on the VPN already? Try the other login node: ./setup.sh --login wato-login2" \
+                    "ssh said: $detail"
+                ;;
+            *"Could not resolve"*)
+                fail "could not look up $LOGIN_HOSTNAME; check your internet connection." "ssh said: $detail" ;;
+            *"Connection refused"*)
+                fail "$login refused the connection; it may be down." \
+                    "Try the other login node: ./setup.sh --login wato-login2. Status: https://status.watonomous.ca" \
+                    "ssh said: $detail"
                 ;;
             *"passphrase"* | *"bad permissions"* | *"UNPROTECTED"*)
                 fail "ssh could not use the key $key." "ssh said: $detail" ;;
@@ -418,7 +438,7 @@ main() {
     local settings_str="" s
     for s in ${CLUSTER_SETTINGS[@]+"${CLUSTER_SETTINGS[@]}"}; do settings_str+=" $s"; done
     set +o errexit
-    out=$(ssh -F "$TMPCFG" -o ConnectTimeout=20 asd-dev-login \
+    out=$(ssh -F "$TMPCFG" asd-dev-login \
         "mkdir -p .asd-dev/tmp && tr -d '\\r' > .asd-dev/tmp/asd-dev.new && bash .asd-dev/tmp/asd-dev.new install$settings_str" \
         <"$HELPER" 2>&1)
     rc=$?
@@ -443,7 +463,7 @@ main() {
     ssh -F "$config" -G asd-dev-session >/dev/null 2>&1 ||
         fail "ssh cannot parse $config after the change." "Your previous file is in $config.asd-dev-backup-*."
     set +o errexit
-    out=$(ssh -F "$config" -o ConnectTimeout=20 asd-dev-login '.asd-dev/bin/asd-dev version' 2>&1 </dev/null)
+    out=$(ssh -F "$config" asd-dev-login '.asd-dev/bin/asd-dev version' 2>&1 </dev/null)
     rc=$?
     set -o errexit
     ((rc == 0)) || fail "the new config does not work for the login node:" "$out"
