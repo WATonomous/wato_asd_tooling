@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.4
+ASD_DEV_VERSION=2.0.0-beta.5
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=4
+ASD_DEV_SERIAL=5
 
 ROOT="$HOME/.asd-dev"
 CONFIG="${ASD_DEV_CONFIG:-$ROOT/config}" # override for tests
@@ -29,7 +29,7 @@ declare -A CFG=(
     [cpus]=4
     [mem]=16G
     [time]=6:00:00
-    [tmpdisk]=10240
+    [tmpdisk]=32768
     [vram]=0
     [gpus]=0
     [gpu_type]=""
@@ -117,7 +117,7 @@ create_default_config() {
 cpus=4                # CPU cores
 mem=16G               # RAM
 time=6:00:00          # time limit (WATcloud asks interactive work to stay within 6 hours)
-tmpdisk=10240         # MiB of job-local /tmp (docker images and containers live here)
+tmpdisk=32768         # MiB of job-local /tmp, where docker images live; above ~66000 some nodes cannot run it
 vram=0                # MiB of GPU memory as a shared GPU slice ("shard"); 0 = no GPU
 gpus=0                # whole GPUs instead of a slice (overrides vram when > 0)
 gpu_type=             # e.g. rtx_3090; empty = any
@@ -252,13 +252,16 @@ read_state() {
     [[ -n $S_PORT && -n $S_NODE ]]
 }
 
-# Prints why the last session $1 ended, if it ended recently.
+# Prints why the last session $1 (or, without $1, any session) ended, if it ended recently.
 explain_last_end() {
-    local name=$1 line id state end reason=""
-    line=$(sacct -X -n -P --name="$(job_name "$name")" -S now-3days -o JobID,State,End 2>/dev/null </dev/null |
-        awk -F'|' '$1 ~ /^[0-9]+$/' | tail -n1 || true)
+    local name=${1:-} line id jobname state end reason=""
+    line=$(sacct -X -n -P -S now-3days -o JobID,JobName,State,End 2>/dev/null </dev/null |
+        awk -F'|' -v p="$JOB_PREFIX" -v want="${name:+$(job_name "$name")}" '
+            $1 ~ /^[0-9]+$/ && $3 !~ /^(RUNNING|PENDING)/ && (want == "" ? ($2 == p || index($2, p "-") == 1) : $2 == want)' |
+        tail -n1 || true)
     [[ -n $line ]] || return 0
-    IFS='|' read -r id state end <<<"$line"
+    IFS='|' read -r id jobname state end <<<"$line"
+    name=$(name_from_job_name "$jobname")
     if [[ -f $SESSIONS/last-$name ]] && grep -q "^job=$id\$" "$SESSIONS/last-$name"; then
         reason=$(sed -n 's/^reason=//p' "$SESSIONS/last-$name")
     fi
@@ -321,13 +324,10 @@ wait_ready() {
                 ;;
             RUNNING)
                 running_since=${running_since:-$SECONDS}
+                # The job writes its state file only once sshd listens, so no probe is needed
+                # (a probe would also leave "Connection closed" noise in the session log).
                 if read_state "$J_ID"; then
-                    # Probe only young sessions: each probe leaves a "Connection closed" line in the sshd log.
-                    if (($(date +%s) - $(stat -c %Y "$(state_file "$J_ID")") > 120)) ||
-                        nc -z -w 3 "${S_ADDR:-$S_NODE.$CLUSTER_DOMAIN}" "$S_PORT" </dev/null 2>/dev/null; then
-                        return 0
-                    fi
-                    msg="job $J_ID is running on $J_NODE but its ssh server (port $S_PORT) does not answer yet"
+                    return 0
                 elif [[ $J_COMMENT != asd-dev ]]; then
                     # Started by the old start_interactive_session.sh: sshd on the fixed port, no state file.
                     S_NODE=$J_NODE S_ADDR="" S_PORT=$(($(id -u) * 20 - 1))
@@ -398,7 +398,14 @@ cmd_proxy() {
         die "the session is not ready yet (see the line above); it stays queued and starts on its own." \
             "Click Retry in VS Code in a minute, or wait for it in a terminal with: $(start_cmd "$name")"
     fi
-    exec nc -N "${S_ADDR:-$S_NODE.$CLUSTER_DOMAIN}" "$S_PORT"
+    local addr=${S_ADDR:-$S_NODE.$CLUSTER_DOMAIN} started=$SECONDS rc=0
+    nc -N "$addr" "$S_PORT" || rc=$?
+    # A quick failure means nothing answered; a late one is just the end of a connection.
+    if ((rc != 0 && SECONDS - started < 5)); then
+        die "could not reach the session's ssh server ($addr port $S_PORT on $S_NODE, job $J_ID)." \
+            "It restarts by itself if it crashed; retry in a few seconds. Its log: asd-dev logs $name"
+    fi
+    exit "$rc"
 }
 
 # Parses start/stop flags into FLAG_SETTINGS (key=value words) and NAME.
@@ -523,7 +530,7 @@ cmd_status() {
     lines=$(all_session_jobs)
     if [[ -z $lines ]]; then
         say "no session is running. Start one: asd-dev start   (or just connect from VS Code)"
-        explain_last_end default
+        explain_last_end
         return 0
     fi
     printf '%-10s %-8s %-10s %-14s %-12s %s\n' SESSION JOB STATE NODE TIME_LEFT RESOURCES >&2
@@ -788,6 +795,35 @@ on_term() {
     exit 143
 }
 
+# Writes a notice to the terminals of this job's processes (VS Code terminals, ssh sessions).
+notify_terminals() {
+    local cg pids tty
+    cg=$(sed -n 's/^0:://p' /proc/self/cgroup)
+    pids=$(find "/sys/fs/cgroup${cg%%/step_*}" -name cgroup.procs -exec cat {} + 2>/dev/null | tr '\n' ',' || true)
+    [[ -n $pids ]] || return 0
+    for tty in $(ps -o tty= -p "${pids%,}" 2>/dev/null | sort -u | grep '^pts/' || true); do
+        printf '\r\n\033[1;33m%s\033[0m\n' "$1" >"/dev/$tty" 2>/dev/null || true
+    done
+}
+
+# Warns once when the job's /tmp (docker's data root) is nearly full.
+check_tmp_space() {
+    local use
+    use=$(df -P /tmp 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print $5 }')
+    [[ $use =~ ^[0-9]+$ ]] || return 0
+    if ((use >= 90)) && [[ $TMP_WARNED != yes ]]; then
+        TMP_WARNED=yes
+        local msg
+        msg="asd-dev: /tmp of this session is ${use}% full ($(df -Ph /tmp | awk 'NR == 2 { print $3 " of " $2 }'));"
+        msg+=" docker keeps its images there. Free space with 'docker system prune', or give the next session more:"
+        msg+=" asd-dev stop, then asd-dev start --tmpdisk 65536"
+        log "$msg"
+        notify_terminals "$msg"
+    elif ((use < 80)); then
+        TMP_WARNED=no
+    fi
+}
+
 session_active() {
     local conns
     conns=$(ss -Htn state established "( sport = :$PORT )" 2>/dev/null | wc -l)
@@ -813,7 +849,8 @@ cmd_job() {
     SSHD_PID="" PORT=""
     mkdir -p "$SESSIONS" "$LOGS"
     log "asd-dev $ASD_DEV_VERSION: session '$SESSION_NAME', job $SLURM_JOB_ID on $(hostname -s)," \
-        "${SLURM_CPUS_ON_NODE:-?} CPUs, ${SLURM_MEM_PER_NODE:-?} MB RAM, idle_timeout=${idle_timeout} min, docker_state=$DOCKER_STATE"
+        "${SLURM_CPUS_ON_NODE:-?} CPUs, ${SLURM_MEM_PER_NODE:-?} MB RAM, $(df -Ph /tmp | awk 'NR == 2 { print $2 }') /tmp," \
+        "idle_timeout=${idle_timeout} min, docker_state=$DOCKER_STATE"
     [[ -f $HOSTKEY ]] || {
         log "ERROR: $HOSTKEY is missing; run the setup script on your laptop again"
         exit 1
@@ -836,6 +873,7 @@ cmd_job() {
     start_docker &
 
     local last_active=$SECONDS tick=0
+    TMP_WARNED=no
     while true; do
         sleep 5 &
         wait $! || true
@@ -845,6 +883,7 @@ cmd_job() {
         if [[ $SAVE_REQUESTED == yes ]]; then
             SAVE_REQUESTED=no
             log "the time limit is 10 minutes away"
+            notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) reaches its time limit in 10 minutes and then stops. Save your work."
             save_docker_state "time limit approaching"
         fi
         if ! kill -0 "$SSHD_PID" 2>/dev/null; then
@@ -853,6 +892,7 @@ cmd_job() {
         fi
         tick=$((tick + 1))
         if ((tick % 12 == 0)); then
+            check_tmp_space
             if session_active; then
                 last_active=$SECONDS
             elif ((idle_timeout > 0 && SECONDS - last_active >= idle_timeout * 60)); then
