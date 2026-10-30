@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.3
+ASD_DEV_VERSION=2.0.0-beta.4
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=3
+ASD_DEV_SERIAL=4
 
 ROOT="$HOME/.asd-dev"
 CONFIG="${ASD_DEV_CONFIG:-$ROOT/config}" # override for tests
@@ -460,8 +460,9 @@ cmd_start() {
 # ---------------------------------------------------------------- commands: stop, status, logs
 
 stop_job() {
-    local id=$1 state=$2 node=$3 waited=0
-    if [[ $state != RUNNING || $FLAG_NOW == yes ]]; then
+    local id=$1 state=$2 node=$3 comment=$4 waited=0
+    # Jobs of the old start_interactive_session.sh do not watch for the stop file.
+    if [[ $state != RUNNING || $FLAG_NOW == yes || $comment != asd-dev ]]; then
         scancel "$id" </dev/null
         say "cancelled job $id."
         return
@@ -473,7 +474,7 @@ stop_job() {
         return
     fi
     say "stopping job $id on $node (saving docker state first if enabled; this can take a few minutes)..."
-    while squeue -h -j "$id" -o %T 2>/dev/null </dev/null | grep -q .; do
+    while squeue -h -j "$id" -t PD,CF,R,CG,S -o %T 2>/dev/null </dev/null | grep -q .; do
         sleep 3
         waited=$((waited + 3))
         if ((waited % 60 == 0)); then say "still stopping ($waited s)..."; fi
@@ -494,7 +495,7 @@ cmd_stop() {
         [[ -n $line ]] || die "job $FLAG_JOB is not one of your active jobs."
         parse_job "$line"
         [[ $J_NAME == "$JOB_PREFIX"* ]] || die "job $FLAG_JOB ($J_NAME) is not an asd-dev session; use scancel for other jobs."
-        stop_job "$J_ID" "$J_STATE" "$J_NODE"
+        stop_job "$J_ID" "$J_STATE" "$J_NODE" "$J_COMMENT"
         return
     fi
     if [[ $FLAG_ALL == yes ]]; then
@@ -508,7 +509,7 @@ cmd_stop() {
     fi
     while IFS= read -r line; do
         parse_job "$line"
-        stop_job "$J_ID" "$J_STATE" "$J_NODE"
+        stop_job "$J_ID" "$J_STATE" "$J_NODE" "$J_COMMENT"
     done <<<"$lines"
 }
 
