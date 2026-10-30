@@ -13,7 +13,7 @@ set -o errexit -o nounset -o pipefail
 ASD_DEV_VERSION=2.0.0-beta.1
 
 ROOT="$HOME/.asd-dev"
-CONFIG="$ROOT/config"
+CONFIG="${ASD_DEV_CONFIG:-$ROOT/config}" # override for tests
 SESSIONS="$ROOT/sessions"
 LOGS="$ROOT/logs"
 HOSTKEY="$ROOT/ssh_host_ed25519_key"
@@ -225,7 +225,7 @@ explain_reason() {
         ReqNodeNotAvail* | PartitionDown | NodeDown) echo "the nodes that fit this request are unavailable right now ($1)" ;;
         PartitionTimeLimit) echo "the time limit is longer than the partition allows ($1)"; return 1 ;;
         BadConstraints | PartitionConfig | InvalidQOS | InvalidAccount | QOSJobLimit) echo "SLURM cannot run this request ($1)"; return 1 ;;
-        JobHeld* | launch_failed_requeued_held) echo "held ($1): run 'asd-dev stop' and start again"; return 1 ;;
+        JobHeld* | launch_failed_requeued_held) echo "held by SLURM ($1)"; return 1 ;;
         *) echo "pending ($1)" ;;
     esac
 }
@@ -367,7 +367,7 @@ take_lock() {
         flock -w 20 9 || say "WARNING: could not lock $f; continuing without it"
     fi
 }
-release_lock() { exec 9>&- 2>/dev/null || true; }
+release_lock() { exec 9>&-; }
 
 # ---------------------------------------------------------------- commands: proxy, start
 
@@ -393,8 +393,8 @@ cmd_proxy() {
     fi
     release_lock
     if ! wait_ready "$deadline"; then
-        die "the session is not ready yet (see the line above). Nothing is wrong; it keeps starting." \
-            "Click Retry in VS Code in a minute, or watch it from a terminal with: asd-dev start"
+        die "the session is not ready yet (see the line above); it stays queued and starts on its own." \
+            "Click Retry in VS Code in a minute, or wait for it in a terminal with: $(start_cmd "$name")"
     fi
     exec nc -N "${S_ADDR:-$S_NODE.$CLUSTER_DOMAIN}" "$S_PORT"
 }
