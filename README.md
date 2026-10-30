@@ -49,7 +49,8 @@ platform of the remote host, choose **Linux**.
 
 If you have no session running, connecting starts one with your defaults (4 CPUs, 16 GB RAM,
 32 GiB of `/tmp`, no GPU, 6 hours). When the cluster has room this takes a few seconds; the
-first connection also installs VS Code's server in your cluster home, which takes a minute.
+first connection with a new VS Code version also installs VS Code's server in your cluster home
+(`~/.vscode-server`, about 1.3 GB), which takes under a minute.
 
 Then open a folder (for example `~/wato_monorepo`) and a terminal. `docker` works there; the
 docker daemon may need a few more seconds after the session starts.
@@ -142,7 +143,7 @@ look for lines starting with `asd-dev:`. Most problems are one of these:
 | `Host key verification failed` | The session host key changed (for example `~/.asd-dev` was deleted). Run setup again. |
 | `Could not resolve hostname asd-dev-session` | Your SSH config has no asd-dev entries. Run setup again; on Windows run `setup.cmd`. |
 | `asd-dev: ERROR: not starting a new ... session by itself so soon` | Your last session ended less than 3 hours ago (the line above says how). Run `./asd-dev start`. |
-| `Disk quota exceeded` in your home | VS Code keeps a server of several hundred MB per VS Code version in `~/.vscode-server`, in your 20 GiB home. Delete old versions there. |
+| `Disk quota exceeded` in your home | VS Code keeps its server (about 1.3 GB per VS Code version) in `~/.vscode-server`, in your 20 GiB home. Delete old versions there. |
 | `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `asd-dev logs`. |
 
 If docker misbehaves after a restore, start once without the saved state

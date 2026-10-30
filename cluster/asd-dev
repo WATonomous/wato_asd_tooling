@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.9
+ASD_DEV_VERSION=2.0.0-beta.10
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=9
+ASD_DEV_SERIAL=10
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -961,7 +961,7 @@ cmd_job() {
         # Tell the user once, in the first terminal that appears, that VS Code booked this job.
         if [[ $started_by == vscode ]] && ((tick % 6 == 0)) && have_terminal; then
             started_by=notified
-            notify_terminals "asd-dev: VS Code started this session (job $SLURM_JOB_ID: ${SLURM_CPUS_ON_NODE:-?} CPUs, until $(date -u -d "@${SLURM_JOB_END_TIME:-0}" '+%H:%M') UTC) when it connected. It stops ${idle_timeout} min after the last connection closes; to stop it now: asd-dev stop"
+            notify_terminals "asd-dev: VS Code started this session (job $SLURM_JOB_ID: ${SLURM_CPUS_ON_NODE:-?} CPUs, until $(date -u -d "@${SLURM_JOB_END_TIME:-0}" '+%H:%M') UTC) when it connected. It stops ${idle_timeout} min after the last connection closes; to stop it now: $(stop_cmd "$SESSION_NAME")"
         fi
         if ((tick % 12 == 0)); then
             check_tmp_space
