@@ -122,10 +122,9 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
     $kh = Quote-Value (To-SshPath $known)
     $proxyF = ''
     if ($proxyConfig) { $proxyF = ' -F ' + (Quote-Value (To-SshPath $proxyConfig)) }
-    $date = Get-Date -Format 'yyyy-MM-dd'
     $lines = @(
         $BlockBegin,
-        "# Written by wato_asd_tooling's setup on $date. Run setup again to change it; edits here are lost.",
+        "# Written by wato_asd_tooling's setup.sh. Run it again to change this block; edits here are lost.",
         'Host asd-dev-login',
         "    HostName $script:LoginHostName",
         "    User $script:ClusterUser",
@@ -363,6 +362,10 @@ try {
     foreach ($s in $ClusterSettings) { $settings += " $s" }
     $remote = "mkdir -p .asd-dev/tmp && tr -d '\r' < .asd-dev-upload > .asd-dev/tmp/asd-dev.new && rm -f .asd-dev-upload && bash .asd-dev/tmp/asd-dev.new install$settings"
     $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-o', 'ConnectTimeout=20', 'asd-dev-login', $remote)
+    if ($r.Text -match 'ASD_DEV_NEWER_INSTALLED') {
+        Fail 'your cluster home already has a newer asd-dev than this copy of wato_asd_tooling.' @(
+            'Update this copy (git pull, or download it again) and run setup.cmd again.')
+    }
     if ($r.Code -ne 0 -or $r.Text -notmatch 'ASD_DEV_INSTALLED') {
         Fail "installing the helper on the cluster failed (exit code $($r.Code)):" @($r.Text)
     }

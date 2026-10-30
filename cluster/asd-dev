@@ -10,7 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.1
+ASD_DEV_VERSION=2.0.0-beta.3
+# Bumped on every change; install refuses to replace a newer helper with an older one.
+ASD_DEV_SERIAL=3
 
 ROOT="$HOME/.asd-dev"
 CONFIG="${ASD_DEV_CONFIG:-$ROOT/config}" # override for tests
@@ -568,8 +570,14 @@ cmd_config() {
 # ---------------------------------------------------------------- command: install (run by setup)
 
 cmd_install() {
-    local src=$0 settings=() kv
+    local src=$0 settings=() kv installed_serial
     for kv in "$@"; do settings+=("$kv"); done
+    installed_serial=$(sed -n 's/^ASD_DEV_SERIAL=\([0-9]*\)$/\1/p' "$ROOT/bin/asd-dev" 2>/dev/null | head -n1)
+    if ((${installed_serial:-0} > ASD_DEV_SERIAL)) && [[ ${ASD_DEV_ALLOW_DOWNGRADE:-} != yes ]]; then
+        printf 'ASD_DEV_NEWER_INSTALLED %s %s\n' "$(sed -n 's/^ASD_DEV_VERSION=//p' "$ROOT/bin/asd-dev" | head -n1)" "$ASD_DEV_VERSION"
+        die "your cluster home has a newer asd-dev than this copy of wato_asd_tooling ($ASD_DEV_VERSION)." \
+            "Update your copy (git pull in wato_asd_tooling) and run setup again."
+    fi
     umask 077
     mkdir -p "$ROOT/bin" "$SESSIONS" "$LOGS"
     chmod 700 "$ROOT"
@@ -603,6 +611,7 @@ cmd_install() {
 # ---------------------------------------------------------------- the session job
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+human_size() { numfmt --to=iec --suffix=B "$(stat -c %s "$1")"; }
 
 docker_state_file() {
     if [[ $SESSION_NAME == default ]]; then
@@ -630,7 +639,7 @@ load_docker_state() {
         log "[docker] WARNING: not loading $file: it or its directory is not owned by you, or others can write to it."
         return 0
     fi
-    log "[docker] loading saved docker state ($(du -h "$file" | cut -f1)) from $file ..."
+    log "[docker] loading saved docker state ($(human_size "$file")) from $file ..."
     if zstd -q -d --stdout "$file" | rootlesskit tar --blocking-factor=64 -xpf - -C / tmp/docker; then
         log "[docker] docker state loaded"
     else
@@ -680,7 +689,7 @@ save_docker_state() {
     log "[docker] saving docker state ($why) to $file ..."
     tmp=$(mktemp "$file.tmp.XXXXXX")
     if rootlesskit tar -C / -cf - tmp/docker | zstd -q -T0 -3 >"$tmp" && mv -f "$tmp" "$file"; then
-        log "[docker] docker state saved ($(du -h "$file" | cut -f1))"
+        log "[docker] docker state saved ($(human_size "$file"))"
     else
         rm -f "$tmp"
         log "[docker] WARNING: saving docker state failed; the previous save is kept"

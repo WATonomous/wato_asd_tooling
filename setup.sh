@@ -164,7 +164,7 @@ make_block() {
     [[ -n $3 ]] && proxy_f=" -F $(ssh_quote "$3")"
     cat <<EOF
 $BLOCK_BEGIN
-# Written by wato_asd_tooling's setup on $(date '+%Y-%m-%d'). Run setup again to change it; edits here are lost.
+# Written by wato_asd_tooling's setup.sh. Run it again to change this block; edits here are lost.
 Host asd-dev-login
     HostName $LOGIN_HOSTNAME
     User $CLUSTER_USER
@@ -422,6 +422,10 @@ main() {
         <"$HELPER" 2>&1)
     rc=$?
     set -o errexit
+    if [[ $out == *ASD_DEV_NEWER_INSTALLED* ]]; then
+        fail "your cluster home already has a newer asd-dev than this copy of wato_asd_tooling." \
+            "Update this copy (git pull) and run ./setup.sh again."
+    fi
     if ((rc != 0)) || [[ $out != *ASD_DEV_INSTALLED* ]]; then
         fail "installing the helper on the cluster failed (exit code $rc):" "$out"
     fi
