@@ -47,6 +47,8 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
                      works too when the private key only lives in an SSH agent
   --login HOST       wato-login1 (default) or wato-login2
   --ssh-config FILE  ssh config file to write (default: %USERPROFILE%\.ssh\config, which VS Code reads)
+  --no-agent-forwarding  do not forward your SSH agent into sessions (it is forwarded by default so
+                     git over SSH works there; root on the compute node could use it meanwhile)
   --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
                      independent install, e.g. to test another version)
   --yes              do not ask questions; use defaults and the values given
@@ -60,7 +62,7 @@ Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the 
 
 # ---------------------------------------------------------------- arguments
 
-$ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $ArgClusterDir = ''; $AssumeYes = $false
+$ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $ArgClusterDir = ''; $ArgForward = ''; $AssumeYes = $false
 $ClusterSettings = @()
 $settingNames = @('cpus', 'mem', 'time', 'tmpdisk', 'vram', 'gpus', 'gpu-type', 'idle-timeout', 'auto-start', 'docker-state')
 for ($i = 0; $i -lt $args.Count; $i++) {
@@ -70,6 +72,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($name) {
         'yes' { $AssumeYes = $true; $needsValue = $false }
         'y' { $AssumeYes = $true; $needsValue = $false }
+        'no-agent-forwarding' { $ArgForward = 'no'; $needsValue = $false }
+        'agent-forwarding' { $ArgForward = 'yes'; $needsValue = $false }
         'h' { Show-Usage; exit 0 }
         'help' { Show-Usage; exit 0 }
     }
@@ -155,7 +159,7 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         '    HostKeyAlias asd-dev-session',
         "    UserKnownHostsFile $kh",
         '    StrictHostKeyChecking yes',
-        '    ForwardAgent yes',
+        "    ForwardAgent $($script:ForwardAgent)",
         '    ServerAliveInterval 15',
         '    ServerAliveCountMax 4',
         '',
@@ -335,6 +339,15 @@ if ($Key.StartsWith('~')) { $Key = Join-Path $env:USERPROFILE $Key.Substring(1).
 if (-not (Test-Path -LiteralPath $Key)) { Fail "key file '$Key' does not exist." }
 $Key = (Resolve-Path -LiteralPath $Key).Path
 if ($Key.EndsWith('.pub')) { Info "Using the public key ${Key}: ssh will ask your SSH agent to sign with it." }
+
+$prevForward = ''
+$inBlock = $false
+foreach ($l in @(Read-Lines $Config)) {
+    if ($l -eq $BlockBegin) { $inBlock = $true; continue }
+    if ($l -eq $BlockEnd) { break }
+    if ($inBlock -and $l -match '^\s*ForwardAgent\s+(\S+)') { $prevForward = $Matches[1].ToLowerInvariant(); break }
+}
+$script:ForwardAgent = if ($ArgForward) { $ArgForward } elseif ($prevForward -eq 'no') { 'no' } else { 'yes' }
 
 # --- helper directory in the cluster home
 $script:ClusterDir = if ($ArgClusterDir) { $ArgClusterDir } else { Previous-ClusterDir $Config }

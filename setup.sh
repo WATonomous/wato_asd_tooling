@@ -43,6 +43,8 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --login HOST       wato-login1 (default) or wato-login2
   --ssh-config FILE  ssh config file to write (default: the one VS Code reads)
   --no-windows       on WSL: do not also configure Windows (where VS Code runs)
+  --no-agent-forwarding  do not forward your SSH agent into sessions (it is forwarded by default so
+                     git over SSH works there; root on the compute node could use it meanwhile)
   --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
                      independent install, e.g. to test another version)
   --yes              do not ask questions; use defaults and the values given
@@ -56,7 +58,7 @@ EOF
 
 # ---------------------------------------------------------------- arguments
 
-ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ARG_CLUSTER_DIR="" ASSUME_YES=no DO_WINDOWS=yes
+ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ARG_CLUSTER_DIR="" ARG_FORWARD="" ASSUME_YES=no DO_WINDOWS=yes
 CLUSTER_SETTINGS=()
 add_setting() {
     [[ $2 =~ ^[A-Za-z0-9_:.-]*$ ]] || fail "invalid value for --$1: '$2'"
@@ -69,6 +71,8 @@ while (($#)); do
         --login) ARG_LOGIN=${2:?--login needs a value}; shift ;;
         --ssh-config) ARG_CONFIG=${2:?--ssh-config needs a value}; shift ;;
         --cluster-dir) ARG_CLUSTER_DIR=${2:?--cluster-dir needs a value}; shift ;;
+        --no-agent-forwarding) ARG_FORWARD=no ;;
+        --agent-forwarding) ARG_FORWARD=yes ;;
         --no-windows) DO_WINDOWS=no ;;
         --yes | -y) ASSUME_YES=yes ;;
         --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --idle-timeout | --auto-start | --docker-state)
@@ -164,6 +168,7 @@ LOGIN_HOSTNAME=""
 CLUSTER_USER=""
 RC_NONE=""
 CLUSTER_DIR=.asd-dev
+FORWARD_AGENT=yes
 
 # make_block IDENTITY KNOWN_HOSTS PROXY_CONFIG(empty = default config)
 make_block() {
@@ -197,7 +202,7 @@ Host asd-dev-session asd-dev-session-*
     HostKeyAlias asd-dev-session
     UserKnownHostsFile $known
     StrictHostKeyChecking yes
-    ForwardAgent yes
+    ForwardAgent $FORWARD_AGENT
     ServerAliveInterval 15
     ServerAliveCountMax 4
 
@@ -277,6 +282,13 @@ previous_value() { # previous_value CONFIG KEYWORD: value from our block's asd-d
         $0 == b { inb = 1; next } $0 == e { inb = 0 }
         inb && tolower($1) == "host" { inlogin = ($2 ~ /^asd-dev-login/) }
         inb && inlogin && tolower($1) == k { $1 = ""; sub(/^ +/, ""); gsub(/"/, ""); print; exit }' "$1"
+}
+
+previous_forward_agent() { # ForwardAgent in our block's session entry
+    [[ -f $1 ]] || return 0
+    awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        $0 == b { inb = 1; next } $0 == e { inb = 0 }
+        inb && tolower($1) == "forwardagent" { print tolower($2); exit }' "$1"
 }
 
 previous_cluster_dir() { # the helper dir in our block's ProxyCommand
@@ -391,6 +403,9 @@ main() {
     elif [[ ! -f $key.pub ]]; then
         warn "$key.pub is missing; that is fine as long as $key is the private key."
     fi
+
+    FORWARD_AGENT=${ARG_FORWARD:-$(previous_forward_agent "$config")}
+    [[ $FORWARD_AGENT == no ]] || FORWARD_AGENT=yes
 
     # --- helper directory in the cluster home
     CLUSTER_DIR=${ARG_CLUSTER_DIR:-$(previous_cluster_dir "$config")}

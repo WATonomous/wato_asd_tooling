@@ -40,6 +40,10 @@ session) and `asd-dev-login` (the login node it connects through) to the top of 
 (`~/.ssh/config`; a backup of the old file is kept next to it). Run it again at any time to
 change the username or key.
 
+Your SSH agent is forwarded into sessions so that `git` over SSH works there. While you are
+connected, anything in the session (and the node's administrators) can use the keys in your
+agent; run setup with `--no-agent-forwarding` if you do not want that.
+
 ## 2. Connect
 
 In VS Code, open the **Remote Explorer** in the left bar, pick **SSH**, hover over
