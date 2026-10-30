@@ -524,7 +524,13 @@ main() {
     out=$(ssh -F "$config" -T asd-dev-login "$CLUSTER_DIR/bin/asd-dev version" 2>&1 </dev/null)
     rc=$?
     set -o errexit
-    ((rc == 0)) || fail "the new config does not work for the login node:" "$out"
+    if ((rc != 0)); then
+        if [[ $out == *"ControlPath too long"* ]]; then
+            fail "your own ControlPath setting makes a socket path that is too long for this system." \
+                "Shorten it in $config (for example ControlPath /tmp/cm-%C) and run setup again." "ssh said: $out"
+        fi
+        fail "the new config does not work for the login node:" "$out"
+    fi
     ok "  checked: 'ssh asd-dev-login' works with the new config"
 
     # --- WSL: VS Code runs on Windows and uses Windows' ssh, keys and config

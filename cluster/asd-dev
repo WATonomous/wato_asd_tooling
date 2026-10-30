@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-beta.10
+ASD_DEV_VERSION=2.0.0-beta.11
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=10
+ASD_DEV_SERIAL=11
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -362,6 +362,7 @@ wait_ready() {
                     S_NODE=$J_NODE S_ADDR="" S_PORT=$(($(id -u) * 20 - 1))
                     if nc -z -w 3 "$S_NODE.$CLUSTER_DOMAIN" "$S_PORT" </dev/null 2>/dev/null; then
                         say "connecting to job $J_ID, which the old start_interactive_session.sh started."
+                        say "In it, docker needs: export DOCKER_HOST=unix:///tmp/run/docker.sock (stop it and connect again for a new-style session)."
                         return 0
                     fi
                     msg="job $J_ID (started by the old tooling) runs on $J_NODE, but nothing listens on port $S_PORT"
