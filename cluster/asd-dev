@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.1.0-rc.1
+ASD_DEV_VERSION=2.1.0-rc.2
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=17
+ASD_DEV_SERIAL=18
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -41,7 +41,7 @@ declare -A CFG=(
     [cpus]=4
     [mem]=16G
     [time]=6:00:00
-    [tmpdisk]=20480
+    [tmpdisk]=10240
     [vram]=0
     [gpus]=0
     [gpu_type]=""
@@ -129,7 +129,7 @@ create_default_config() {
 cpus=4                # CPU cores
 mem=16G               # RAM
 time=6:00:00          # time limit (WATcloud asks interactive work to stay within 6 hours)
-tmpdisk=20480         # MiB of job-local /tmp, where docker keeps images (CARLA needs 40960; above ~66000 two nodes cannot run it)
+tmpdisk=10240         # MiB of job-local /tmp, where docker keeps images; CARLA needs 40960; above ~66000 two nodes cannot run it
 vram=0                # MiB of GPU memory as a shared GPU slice ("shard"); 0 = no GPU
 gpus=0                # whole GPUs instead of a slice (overrides vram when > 0)
 gpu_type=             # e.g. rtx_3090; empty = any

@@ -50,7 +50,7 @@ agent; run setup with `--no-agent-forwarding` if you do not want that.
 ./asd-dev start          # on Windows: .\asd-dev.cmd start
 ```
 
-This submits the session job with your defaults (4 CPUs, 16 GB RAM, 20 GiB of `/tmp`, no GPU,
+This submits the session job with your defaults (4 CPUs, 16 GB RAM, 10 GiB of `/tmp`, no GPU,
 6 hours), shows what it is waiting for if the cluster is busy, and opens VS Code in it once it
 runs (`--no-code` skips that). While it runs you can also connect yourself: in VS Code open the
 **Remote Explorer**, pick **SSH**, hover over **asd-dev-session** and click the arrow, or press
@@ -95,11 +95,14 @@ asd-dev config vram=8192 mem=32G         # or in a session's terminal
 ./asd-dev config                         # show the current defaults
 ```
 
-`tmpdisk` is the job's `/tmp` in MiB, where docker keeps its images and containers; the default
-is 20480 (20 GiB), enough for VS Code and a few monorepo images. **For CARLA, run
-`./asd-dev config tmpdisk=40960` once** (its image unpacks to about 25 GiB); the setting stays.
-Two nodes have only about 66 GiB to give, so above about 66000 only the larger nodes can run the
-session. The session warns in your terminals when `/tmp` is 90% full.
+`tmpdisk` is the job's `/tmp` in MiB, where docker keeps its images and containers. The default
+is 10240 (10 GiB), which holds VS Code's server download and a few small images; the monorepo's
+bigger images may need more, and docker fails with "no space left on device" when it runs out. To
+see how much your session uses, run `watcloud quota disk` in the session's terminal (the
+`TEMP — /tmp` part); the session also warns in your terminals when `/tmp` is 90% full. **For
+CARLA, run `./asd-dev config tmpdisk=40960` once** (its image unpacks to about 25 GiB); the
+setting stays. Two nodes have only about 66 GiB to give, so above about 66000 only the larger
+nodes can run the session.
 
 GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. A GPU slice (`--vram`) is how much
 of a card SLURM reserves for you, not a limit: `nvidia-smi` shows the whole card and nothing
