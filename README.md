@@ -126,8 +126,10 @@ its resources; to change them, stop it and start again. The meaning of every set
 
 ## More than one session
 
-Give a session a name: `./asd-dev start gpu --vram 8192`. Connect to it as
-`asd-dev-session-gpu` (type that name in **Remote-SSH: Connect to Host...**). Stop it with
+Give a session a name: `./asd-dev start gpu --vram 8192`. The first time, this also adds the
+host `asd-dev-session-gpu` to your SSH config, and VS Code lists it from then on; connect to it
+like `asd-dev-session`. `./asd-dev add gpu` adds the host without starting anything (needed when
+you start a named session from the cluster side, for example in a VS Code terminal). Stop it with
 `./asd-dev stop gpu`. Each name has its own saved docker state.
 
 ## Commands
@@ -141,6 +143,7 @@ On your computer (`.\asd-dev.cmd` on Windows) or, without the `./`, in a session
 | `./asd-dev status` | list your sessions with node, time left and resources |
 | `./asd-dev logs [NAME]` | show a session's log (`-f` to follow) |
 | `./asd-dev config [key=value ...]` | show or change your defaults |
+| `./asd-dev add NAME` | add the host `asd-dev-session-NAME` for a named session to your SSH config |
 | `./asd-dev ssh [--name NAME] [command]` | open a terminal in a session, or run a command there (same as `ssh asd-dev-session`) |
 
 `ssh asd-dev-session` also works in any terminal on your computer, and so do `scp` and `rsync`.
@@ -164,9 +167,14 @@ that explain it are in its log. Most problems are one of these:
 | `Disk quota exceeded` in your home | VS Code keeps its server (about 1.3 GB per VS Code version) in `~/.vscode-server`, in your 20 GiB home. Delete old versions there. |
 | `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `asd-dev logs`. |
 
-If docker misbehaves after a restore, start once without the saved state
-(`./asd-dev start --no-docker-state`) or delete the state file in
-`/mnt/wato-drive/slurm-docker-sessions/<uid>/`.
+If a saved docker state cannot be restored because it is damaged, the session says so, starts
+docker empty and leaves the file alone. `./asd-dev start --reset-docker-state` (stop the running
+session first) moves it aside as `<file>.old-<date>` and starts fresh; after two failed restores
+in a row this happens by itself. `--no-docker-state` starts one session without restoring or
+saving anything and leaves the file untouched. The files are in
+`/mnt/wato-drive/slurm-docker-sessions/<uid>/`: `slurm-docker-state.tar.zst` for the default
+session, `slurm-docker-state-<name>.tar.zst` for named ones (installs made with
+`setup --cluster-dir` add their directory name).
 
 To undo setup, delete the lines between `# >>> asd-dev` and `# <<< asd-dev` in your SSH config and
 the `~/.asd-dev` folder in your cluster home.
