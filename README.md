@@ -128,7 +128,7 @@ its resources; to change them, stop it and start again. The meaning of every set
 
 Give a session a name: `./asd-dev start gpu --vram 8192`. The first time, this also adds the
 host `asd-dev-session-gpu` to your SSH config, and VS Code lists it from then on; connect to it
-like `asd-dev-session`. `./asd-dev add gpu` adds the host without starting anything (needed when
+like `asd-dev-session`. Host names are lowercase (ssh matches them exactly). `./asd-dev add gpu` adds the host without starting anything (needed when
 you start a named session from the cluster side, for example in a VS Code terminal). Stop it with
 `./asd-dev stop gpu`. Each name has its own saved docker state.
 
@@ -174,7 +174,8 @@ in a row this happens by itself. `--no-docker-state` starts one session without 
 saving anything and leaves the file untouched. The files are in
 `/mnt/wato-drive/slurm-docker-sessions/<uid>/`: `slurm-docker-state.tar.zst` for the default
 session, `slurm-docker-state-<name>.tar.zst` for named ones (installs made with
-`setup --cluster-dir` add their directory name).
+`setup --cluster-dir` add their directory name). A state moved aside is kept as
+`<file>.old-<date>`; the two newest such copies are kept, older ones are deleted.
 
 To undo setup, delete the lines between `# >>> asd-dev` and `# <<< asd-dev` in your SSH config and
 the `~/.asd-dev` folder in your cluster home.
