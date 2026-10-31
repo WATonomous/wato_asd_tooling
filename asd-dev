@@ -32,7 +32,7 @@ EOF
 
 # The helper path from the session host's ProxyCommand (setup's --cluster-dir can change it).
 helper_path() {
-    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null </dev/null |
+    ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null |
         awk '$1 == "proxycommand" { for (i = 2; i <= NF; i++) if ($i ~ /\/bin\/asd-dev$/) { print $i; exit } }'
 }
 
@@ -42,7 +42,7 @@ remote() { # runs the cluster helper with the given arguments
     # --from tells the helper to print command hints in this wrapper's form (./asd-dev ...).
     cmd="${cmd:-.asd-dev/bin/asd-dev} --from=unix"
     for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
-    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T asd-dev-login "$cmd" || rc=$?
+    ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T asd-dev-login "$cmd" || rc=$?
     if ((rc == 255)); then
         echo "asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN." >&2
         echo "         Permission denied or an unknown host? Run ./setup.sh again." >&2
@@ -58,7 +58,7 @@ alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; el
 open_code() { # open_code HOST_ALIAS FOLDER
     local alias=$1 folder=$2 user
     if [[ -z $folder ]]; then
-        user=$(ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "$alias" 2>/dev/null </dev/null | awk '$1 == "user" { print $2; exit }')
+        user=$(ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "$alias" 2>/dev/null | awk '$1 == "user" { print $2; exit }')
         folder="/home/$user"
     fi
     local uri="vscode-remote://ssh-remote+$alias$folder"
@@ -79,12 +79,12 @@ open_code() { # open_code HOST_ALIAS FOLDER
 # A named session needs its own host entry before ssh or VS Code can reach it.
 ensure_host() { # ensure_host NAME
     # Entries from before the per-session layout pass %h, which a crafted host name could abuse.
-    if ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null </dev/null | grep -qE "^proxycommand .*asd-dev proxy ('%h'|%h)"; then
+    if ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null | grep -qE "^proxycommand .*asd-dev proxy ('%h'|%h)"; then
         echo "asd-dev: your ssh config has asd-dev entries from an earlier version; run ./setup.sh again (it keeps your settings)." >&2
         exit 1
     fi
     [[ -n $1 && $1 != default ]] || return 0
-    if ! ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "asd-dev-session-$1" 2>/dev/null </dev/null | grep -q '^proxycommand '; then
+    if ! ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "asd-dev-session-$1" 2>/dev/null | grep -q '^proxycommand '; then
         local cfg=()
         [[ -n ${ASD_DEV_SSH_CONFIG:-} ]] && cfg=(--ssh-config "$ASD_DEV_SSH_CONFIG")
         "$REPO_DIR/setup.sh" --add-session "$1" ${cfg[@]+"${cfg[@]}"} >&2

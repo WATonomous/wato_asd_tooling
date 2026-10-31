@@ -36,7 +36,7 @@ limit or with "stop".
 function Get-HelperPath {
     $old = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'  # 5.1 turns redirected native stderr into errors
-    try { $pc = & ssh.exe @SshArgs -T -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } | Select-Object -First 1 }
+    try { $pc = & ssh.exe -n @SshArgs -T -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } | Select-Object -First 1 }
     finally { $ErrorActionPreference = $old }
     if ($pc -and ($pc -match '\s(\S+/bin/asd-dev)(\s|$)')) { return $Matches[1] }
     return '.asd-dev/bin/asd-dev'
@@ -48,7 +48,7 @@ function Invoke-Remote([string[]]$words) {
     }
     # --from tells the helper to print command hints in this wrapper's form (.\asd-dev.cmd ...).
     $cmd = (Get-HelperPath) + ' --from=windows ' + ($words -join ' ')
-    & ssh.exe @SshArgs -T asd-dev-login $cmd
+    & ssh.exe -n @SshArgs -T asd-dev-login $cmd
     if ($LASTEXITCODE -eq 255) {
         [Console]::Error.WriteLine('asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN.')
         [Console]::Error.WriteLine('         Permission denied or an unknown host? Run .\setup.cmd again.')
@@ -59,7 +59,7 @@ function Invoke-Remote([string[]]$words) {
 function Ensure-Host([string]$name) {
     $old = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $dflt = & ssh.exe @SshArgs -T -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } }
+    try { $dflt = & ssh.exe -n @SshArgs -T -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } }
     finally { $ErrorActionPreference = $old }
     # Entries from before the per-session layout pass %h, which a crafted host name could abuse.
     if ($dflt -and ($dflt -match "asd-dev proxy ('%h'|%h)")) {
@@ -68,7 +68,7 @@ function Ensure-Host([string]$name) {
     }
     if (-not $name -or $name -eq 'default') { return }
     $ErrorActionPreference = 'Continue'
-    try { $pc = & ssh.exe @SshArgs -T -G "asd-dev-session-$name" 2>$null | Where-Object { $_ -match '^proxycommand ' } }
+    try { $pc = & ssh.exe -n @SshArgs -T -G "asd-dev-session-$name" 2>$null | Where-Object { $_ -match '^proxycommand ' } }
     finally { $ErrorActionPreference = $old }
     if (-not $pc) {
         $setupArgs = @('--add-session', $name)
@@ -93,7 +93,7 @@ function Open-Code([string]$alias, [string]$folder) {
     if (-not $folder) {
         $old = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'  # ssh -G warns about the pty when stdin is not a console
-        try { $user = (& ssh.exe @SshArgs -T -G $alias 2>$null | Where-Object { $_ -match '^user ' } | Select-Object -First 1) -replace '^user ', '' }
+        try { $user = (& ssh.exe -n @SshArgs -T -G $alias 2>$null | Where-Object { $_ -match '^user ' } | Select-Object -First 1) -replace '^user ', '' }
         finally { $ErrorActionPreference = $old }
         $folder = "/home/$user"
     }

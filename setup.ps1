@@ -454,7 +454,7 @@ Step "Checking that you can log in to $login as $($script:ClusterUser)"
 $tmpCfg = [System.IO.Path]::GetTempFileName()
 try {
     [System.IO.File]::WriteAllText($tmpCfg, (Make-Block $Key $Known $tmpCfg), $Utf8NoBom)
-    $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-T', 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
+    $r = Invoke-Native $Ssh @('-n', '-F', $tmpCfg, '-T', 'asd-dev-login', 'echo ASD_DEV_LOGIN_OK $(id -un)')
     if ($r.Text -notmatch 'ASD_DEV_LOGIN_OK') {
         $detail = (($r.Text -split "`n") | Where-Object { $_ -notmatch '^Warning: Permanently added' } | Select-Object -Last 3) -join ' / '
         if ($r.Text -match 'UNPROTECTED|bad permissions|too open') {
@@ -503,7 +503,7 @@ try {
     foreach ($s in $ClusterSettings) { $settings += " $s" }
     $d = $script:ClusterDir
     $remote = "mkdir -p $d/tmp && tr -d '\r' < .asd-dev-upload > $d/tmp/asd-dev.new && rm -f .asd-dev-upload && bash $d/tmp/asd-dev.new --from=windows install$settings"
-    $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-T', 'asd-dev-login', $remote)
+    $r = Invoke-Native $Ssh @('-n', '-F', $tmpCfg, '-T', 'asd-dev-login', $remote)
     if ($r.Text -match 'ASD_DEV_NEWER_INSTALLED') {
         Fail 'your cluster home already has a newer asd-dev than this copy of wato_asd_tooling.' @(
             'Update this copy (git pull, or download it again) and run setup.cmd again.')
@@ -525,7 +525,7 @@ Ok "  installed $installed"
 Step 'Writing the ssh config'
 # A RemoteCommand for all hosts would clash with the commands VS Code and the ProxyCommand run.
 if (Test-Path -LiteralPath $Config) {
-    $g = Invoke-Native $Ssh @('-F', $Config, '-G', 'asd-dev-session')
+    $g = Invoke-Native $Ssh @('-n', '-F', $Config, '-G', 'asd-dev-session')
     if ($g.Text -match '(?m)^remotecommand ') {
         Warn "$Config sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none' to override it."
         $script:RcNone = '    RemoteCommand none'
@@ -533,9 +533,9 @@ if (Test-Path -LiteralPath $Config) {
 }
 Write-KnownHosts $Known
 Install-Block $Config (Make-Block $Key $Known $ProxyConfig)
-$r = Invoke-Native $Ssh @('-F', $Config, '-G', 'asd-dev-session')
+$r = Invoke-Native $Ssh @('-n', '-F', $Config, '-G', 'asd-dev-session')
 if ($r.Code -ne 0) { Fail "ssh cannot parse $Config after the change." @($r.Text, "Your previous file is in $Config.asd-dev-backup-*.") }
-$r = Invoke-Native $Ssh @('-F', $Config, '-T', 'asd-dev-login', "$($script:ClusterDir)/bin/asd-dev version")
+$r = Invoke-Native $Ssh @('-n', '-F', $Config, '-T', 'asd-dev-login', "$($script:ClusterDir)/bin/asd-dev version")
 if ($r.Code -ne 0) { Fail 'the new config does not work for the login node:' @($r.Text) }
 Ok "  checked: 'ssh asd-dev-login' works with the new config"
 

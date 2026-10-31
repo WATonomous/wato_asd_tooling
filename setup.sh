@@ -567,7 +567,7 @@ main() {
     # shellcheck disable=SC2094 # only the file name is used, not its content
     make_block "$nkey" "$nknown" "$(native_path "$TMPCFG" $pathstyle)" >"$TMPCFG"
     set +o errexit
-    out=$(ssh -F "$TMPCFG" -T asd-dev-login 'echo ASD_DEV_LOGIN_OK $(id -un)' 2>&1 </dev/null)
+    out=$(ssh -n -F "$TMPCFG" -T asd-dev-login 'echo ASD_DEV_LOGIN_OK $(id -un)' 2>&1)
     rc=$?
     set -o errexit
     if [[ $out != *ASD_DEV_LOGIN_OK* ]]; then
@@ -643,16 +643,16 @@ main() {
     # --- write this side's ssh config
     step "Writing the ssh config"
     # A RemoteCommand for all hosts would clash with the commands VS Code and the ProxyCommand run.
-    if [[ -f $config ]] && ssh -F "$config" -G asd-dev-session 2>/dev/null </dev/null | grep -qi '^remotecommand '; then
+    if [[ -f $config ]] && ssh -n -F "$config" -G asd-dev-session 2>/dev/null | grep -qi '^remotecommand '; then
         warn "$config sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none' to override it."
         RC_NONE=$'\n    RemoteCommand none'
     fi
     write_known_hosts "$known"
     install_block "$config" "$(make_block "$nkey" "$nknown" "$nproxy")"
-    ssh -F "$config" -G asd-dev-session >/dev/null 2>&1 ||
+    ssh -n -F "$config" -G asd-dev-session >/dev/null 2>&1 ||
         fail "ssh cannot parse $config after the change." "Your previous file is in $config.asd-dev-backup-*."
     set +o errexit
-    out=$(ssh -F "$config" -T asd-dev-login "$CLUSTER_DIR/bin/asd-dev version" 2>&1 </dev/null)
+    out=$(ssh -n -F "$config" -T asd-dev-login "$CLUSTER_DIR/bin/asd-dev version" 2>&1)
     rc=$?
     set -o errexit
     if ((rc != 0)); then
@@ -716,7 +716,7 @@ setup_windows_side() {
     esac
     write_known_hosts "$wknown"
     RC_NONE=""
-    if [[ -f $wconfig ]] && ssh -F "$wconfig" -G asd-dev-session 2>/dev/null </dev/null | grep -qi '^remotecommand '; then
+    if [[ -f $wconfig ]] && ssh -n -F "$wconfig" -G asd-dev-session 2>/dev/null | grep -qi '^remotecommand '; then
         warn "$(native_path "$wconfig" windows) sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none'."
         RC_NONE=$'\n    RemoteCommand none'
     fi
