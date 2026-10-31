@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-rc.1
+ASD_DEV_VERSION=2.0.0-rc.2
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=14
+ASD_DEV_SERIAL=15
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -388,7 +388,8 @@ submit_session() {
         [[ $v == SLURM_CONF ]] || unset+=(-u "$v")
     done
     if ! out=$(env "${unset[@]}" sbatch "${args[@]}" "$ROOT/bin/asd-dev" _job "$name" \
-        "idle_timeout=${CFG[idle_timeout]}" "docker_state=${CFG[docker_state]}" "started_by=$started_by" 2>&1 </dev/null); then
+        "idle_timeout=${CFG[idle_timeout]}" "docker_state=${CFG[docker_state]}" "started_by=$started_by" \
+        "reset_docker_state=${RESET_DOCKER_STATE:-no}" 2>&1 </dev/null); then
         die "SLURM rejected the session job:" "$out" "Requested: $(describe_resources)"
     fi
     J_ID=$(printf '%s\n' "$out" | grep -Eo '^[0-9]+' | tail -n1)
@@ -541,6 +542,7 @@ cmd_proxy() {
 parse_session_flags() {
     # Inside a session, "asd-dev stop" means this session (sshd's SetEnv provides ASD_DEV_SESSION).
     NAME=${ASD_DEV_SESSION:-default} FLAG_SETTINGS=() FLAG_NOW=no FLAG_JOB="" FLAG_ALL=no FLAG_FOLLOW=no
+    RESET_DOCKER_STATE=no
     while (($#)); do
         case $1 in
             --name | -n) NAME=${2:?--name needs a value}; shift ;;
@@ -556,6 +558,7 @@ parse_session_flags() {
             --idle-timeout) FLAG_SETTINGS+=("idle_timeout=${2:?}"); shift ;;
             --docker-state) FLAG_SETTINGS+=("docker_state=yes") ;;
             --no-docker-state) FLAG_SETTINGS+=("docker_state=no") ;;
+            --reset-docker-state) RESET_DOCKER_STATE=yes ;;
             --now) FLAG_NOW=yes ;;
             --all) FLAG_ALL=yes ;;
             --job) FLAG_JOB=${2:?--job needs a job id}; shift ;;
@@ -595,13 +598,17 @@ cmd_start() {
     if find_session_job "$NAME"; then
         release_lock
         say "your '$NAME' session already exists (job $J_ID, $J_STATE${J_NODE:+ on $J_NODE})."
-        if ((${#FLAG_SETTINGS[@]})); then
-            say "It keeps the resources it was started with. To change them: $(stop_cmd "$NAME"), then start again."
+        if ((${#FLAG_SETTINGS[@]})) || [[ $RESET_DOCKER_STATE == yes ]]; then
+            say "It keeps the settings it was started with. To change them: $(stop_cmd "$NAME"), then start again."
         fi
     else
         submit_session "$NAME" start
         release_lock
-        say "submitted job $J_ID: $(describe_resources)"
+        if [[ $J_DEDUPED == yes ]]; then
+            say "using job $J_ID, which another connection started at the same moment"
+        else
+            say "submitted job $J_ID: $(describe_resources)"
+        fi
     fi
     trap 'say "stopped waiting; job $J_ID keeps going. Check it with: asd-dev status   cancel it with: asd-dev stop"; exit 130' INT
     wait_ready 0
@@ -609,6 +616,9 @@ cmd_start() {
     refresh_job
     say "ready: session '$NAME' runs on $J_NODE (job $J_ID, $J_LEFT left)."
     say "Connect: VS Code > Remote Explorer > SSH > $(host_alias "$NAME") > Connect   (terminal: ssh $(host_alias "$NAME"))"
+    if [[ $NAME != default && -n ${SLURM_JOB_ID:-} ]]; then
+        say "VS Code lists $(host_alias "$NAME") once your laptop has its entry: run ./asd-dev add $NAME there."
+    fi
     printf 'ASD_DEV_READY %s %s\n' "$(host_alias "$NAME")" "$J_ID"
 }
 
@@ -685,8 +695,10 @@ all_session_jobs() {
 
 # Removes per-job files of jobs that are no longer active (left behind by hard kills).
 cleanup_stale() {
-    local active f id
-    active=" $(all_session_jobs | cut -d'|' -f1 | tr '\n' ' ') "
+    local jobs active f id
+    # Best effort: without an answer from SLURM nothing is known to be stale.
+    jobs=$(timeout 15 squeue --me -h -o "$SQ_FORMAT" 2>/dev/null </dev/null) || return 0
+    active=" $(printf '%s\n' "$jobs" | own_jobs_filter | cut -d'|' -f1 | tr '\n' ' ') "
     for f in "$SESSIONS"/*.env "$SESSIONS"/*.seen "$SESSIONS"/*.stop "$SESSIONS"/*.stopping; do
         [[ -e $f ]] || continue
         id=${f##*/}
@@ -830,17 +842,28 @@ NOTICE_QUEUE=/tmp/.asd-dev-notices
 # Queues a notice for the session's terminals (written once one exists, see the main loop).
 queue_notice() { printf '%s\n' "$1" >>"$NOTICE_QUEUE"; }
 
-saving_off() { # saving_off REASON TMPDISK_MIB_TO_SUGGEST
-    local file again
+saving_off() { # saving_off REASON WHAT_TO_DO
+    local file
     file=$(docker_state_file)
     : >"$DOCKER_NOSAVE_MARK"
-    again="asd-dev start $( [[ $SESSION_NAME == default ]] || echo "$SESSION_NAME ")--tmpdisk $2"
     log "[docker] WARNING: $1. Docker started empty; saving is off for this session, so $file is kept."
-    queue_notice "asd-dev: $1. Docker started EMPTY, and saving docker state is OFF for this session, so your saved state is kept. To try again with more /tmp: asd-dev stop, then $again"
+    queue_notice "asd-dev: $1. Docker started EMPTY, and saving docker state is OFF for this session, so your saved state is kept. $2"
+}
+
+# Renames the saved state (and its records) to <file>.old-<time>, keeping only the newest such copy.
+move_state_aside() { # move_state_aside WHY
+    local file old
+    file=$(docker_state_file)
+    old="$file.old-$(date '+%Y%m%d-%H%M%S')"
+    find "$DOCKER_STATE_DIR" -maxdepth 1 -name "$(basename "$file").old-*" -delete 2>/dev/null || true
+    mv -f "$file" "$old"
+    rm -f "$file.size" "$file.failures"
+    log "[docker] $1: moved $file aside to $old; docker starts empty and saves a new state at the end"
+    queue_notice "asd-dev: $1, so the saved docker state was moved aside to $old (delete it when you no longer need it). Docker starts empty and saves a new state when this session ends."
 }
 
 load_docker_state() {
-    local file need avail
+    local file need avail again failures use
     file=$(docker_state_file)
     [[ -f $file ]] || {
         log "[docker] no saved docker state for this session yet ($file)"
@@ -851,22 +874,42 @@ load_docker_state() {
         : >"$DOCKER_NOSAVE_MARK"
         return 0
     fi
-    # Saves record their unpacked size next to the archive; older ones are checked by the extract.
-    need=$(cat "$file.size" 2>/dev/null || true)
+    if [[ $RESET_DOCKER_STATE == yes ]]; then
+        move_state_aside "you asked for --reset-docker-state"
+        return 0
+    fi
+    again="asd-dev stop, then asd-dev start $( [[ $SESSION_NAME == default ]] || echo "$SESSION_NAME ")"
+    # Saves record their unpacked size next to the archive. The old scripts rewrite the default
+    # archive without one, so a record older than the archive does not count.
+    need=""
+    if [[ -f $file.size && ! $file -nt $file.size ]]; then need=$(cat "$file.size" 2>/dev/null || true); fi
     avail=$(df --output=avail -B1 /tmp | tail -n1 | tr -d ' ')
     if [[ $need =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]] && ((need + need / 10 > avail)); then
         saving_off "the saved docker state needs $(numfmt --to=iec "$need")B in /tmp, but this session has only $(numfmt --to=iec "$avail")B" \
-            $((need * 12 / 10 / 1048576 + 4096))
+            "To restore it: ${again}--tmpdisk $((need * 12 / 10 / 1048576 + 4096))"
         return 0
     fi
     log "[docker] loading saved docker state ($(human_size "$file")) from $file ..."
     if zstd -q -d --stdout "$file" | rootlesskit tar --blocking-factor=64 -xpf - -C / tmp/docker; then
+        rm -f "$file.failures"
         log "[docker] docker state loaded"
-    else
-        rootlesskit rm -rf /tmp/docker || true
-        saving_off "loading the saved docker state failed (see asd-dev logs; it may have run out of /tmp)" \
-            $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))
+        return 0
     fi
+    use=$(df -P /tmp | awk 'NR == 2 { sub(/%/, "", $5); print $5 }')
+    rootlesskit rm -rf /tmp/docker || true
+    if [[ $use =~ ^[0-9]+$ ]] && ((use >= 95)); then
+        saving_off "restoring the saved docker state ran out of /tmp" \
+            "To restore it: ${again}--tmpdisk $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))"
+        return 0
+    fi
+    failures=$(($(cat "$file.failures" 2>/dev/null || echo 0) + 1))
+    if ((failures >= 2)); then
+        move_state_aside "the saved docker state could not be restored twice in a row (it looks damaged)"
+        return 0
+    fi
+    (umask 077 && echo "$failures" >"$file.failures")
+    saving_off "the saved docker state could not be restored; it looks damaged" \
+        "To discard it: ${again}--reset-docker-state (after one more failed restore it is moved aside by itself)."
 }
 
 start_docker() {
@@ -909,18 +952,20 @@ save_docker_state() {
         return 0
     fi
     log "[docker] saving docker state ($why) to $file ..."
-    # Leftovers of a save that SLURM killed; one job per session name writes here.
-    rm -f "$file".tmp.* "$file".size.tmp
+    # Leftovers of saves that SLURM killed. Only old ones: a duplicate job of the same session may
+    # be saving right now.
+    find "$DOCKER_STATE_DIR" -maxdepth 1 \( -name "$(basename "$file").tmp.*" -o -name "$(basename "$file").size.tmp" \) \
+        -mmin +60 -delete 2>/dev/null || true
     tmp=$(mktemp "$file.tmp.XXXXXX")
     SAVE_TMP=$tmp
     # Read the archive back before it replaces the previous one; that also yields the unpacked
     # size, which the next load compares with the free /tmp space.
     local size
     if rootlesskit tar -C / -cf - tmp/docker | zstd -q -T0 -3 >"$tmp" &&
-        size=$(zstd -q -d --stdout "$tmp" | wc -c) && ((size > 0)); then
-        mv -f "$tmp" "$file"
+        size=$(zstd -q -d --stdout "$tmp" | wc -c) && ((size > 0)) && mv -f "$tmp" "$file"; then
         SAVE_TMP=""
-        (umask 077 && printf '%s\n' "$size" >"$file.size.tmp") && mv -f "$file.size.tmp" "$file.size"
+        (umask 077 && printf '%s\n' "$size" >"$file.size.$$") && mv -f "$file.size.$$" "$file.size" || true
+        rm -f "$file.failures"
         log "[docker] docker state saved ($(human_size "$file"), $(numfmt --to=iec "$size")B unpacked)"
     else
         rm -f "$tmp"
@@ -1101,11 +1146,12 @@ cmd_job() {
     shift || true
     check_name "$SESSION_NAME"
     local idle_timeout=60 kv started_by=start
-    DOCKER_STATE=yes
+    DOCKER_STATE=yes RESET_DOCKER_STATE=no
     for kv in "$@"; do
         case $kv in
             idle_timeout=*) idle_timeout=${kv#*=} ;;
             docker_state=*) DOCKER_STATE=${kv#*=} ;;
+            reset_docker_state=*) RESET_DOCKER_STATE=${kv#*=} ;;
             started_by=*) started_by=${kv#*=} ;;
         esac
     done
@@ -1135,11 +1181,13 @@ cmd_job() {
     write_state
     log "sshd listening on ${ADDR:-*}:$PORT (pid $SSHD_PID); connect with VS Code to $(host_alias "$SESSION_NAME")"
 
-    # Docker state is saved with dockerd stopped, so the session ends 5 min before its time limit
-    # to have the time for that (only for sessions longer than 15 min).
-    local end=${SLURM_JOB_END_TIME:-0} begin=${SLURM_JOB_START_TIME:-0} early_end=0
-    if [[ $DOCKER_STATE == yes && $end =~ ^[0-9]+$ && $begin =~ ^[0-9]+$ ]] && ((end - begin > 900)); then
-        early_end=$((end - 300))
+    # Docker state is saved with dockerd stopped, so the session ends before its time limit to have
+    # the time for that: 5 min early, or a third of the run time for short sessions.
+    local end=${SLURM_JOB_END_TIME:-0} begin=${SLURM_JOB_START_TIME:-0} early_end=0 margin
+    if [[ $DOCKER_STATE == yes && $end =~ ^[0-9]+$ && $begin =~ ^[0-9]+$ ]] && ((end - begin > 120)); then
+        margin=$(((end - begin) / 3))
+        ((margin > 300)) && margin=300
+        early_end=$((end - margin))
     fi
 
     start_docker &
@@ -1156,13 +1204,13 @@ cmd_job() {
             SAVE_REQUESTED=no
             log "the time limit is 10 minutes away"
             if ((early_end > 0)); then
-                notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) ends at $(date -u -d "@$early_end" '+%H:%M') UTC, 5 minutes before its time limit, to save docker state. Save your work."
+                notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) ends at $(date -u -d "@$early_end" '+%H:%M') UTC, shortly before its time limit, to save docker state. Save your work."
             else
                 notify_terminals "asd-dev: this session (job $SLURM_JOB_ID) reaches its time limit in 10 minutes and then stops. Save your work."
             fi
         fi
         if ((early_end > 0 && $(date +%s) >= early_end)); then
-            finish "it reached its time limit (ended 5 min early to save docker state)" timeout
+            finish "it reached its time limit (ended $(((end - early_end) / 60)) min early to save docker state)" timeout
         fi
         if [[ -s $NOTICE_QUEUE ]] && have_terminal; then
             while IFS= read -r line; do notify_terminals "$line"; done <"$NOTICE_QUEUE"
@@ -1210,7 +1258,7 @@ nothing connected.
 Options for start (one-off; use "asd-dev config" to change defaults):
   --cpus N  --mem 16G  --time 6:00:00  --tmpdisk MiB
   --vram MiB (shared GPU slice)  --gpus N (whole GPUs)  --gpu-type rtx_3090  --no-gpu
-  --idle-timeout MIN (0 = never)  --no-docker-state  --partition NAME
+  --idle-timeout MIN (0 = never)  --no-docker-state  --reset-docker-state  --partition NAME
 
 NAME lets you run more than one session: "asd-dev start gpu" is reached as
 "asd-dev-session-gpu" (type that host name in VS Code's "Connect to Host...").
