@@ -195,31 +195,42 @@ function Install-Block([string]$config, [string]$block) {
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     $old = @(Read-Lines $config)
 
-    $legacy = @()
-    $inBlock = $false
+    # Entries for our host names outside the block. The old setup_slurm_ssh.sh wrote one whose
+    # ProxyCommand looks up wato_slurm_dev; only that one is offered for commenting out, and only
+    # with the user's consent. A user's own entry is never changed (ours come first and win).
+    $hostRe = '^\s*([Hh][Oo][Ss][Tt]|[Mm][Aa][Tt][Cc][Hh])[\s=]'
+    $ourRe = '^\s*[Hh][Oo][Ss][Tt][\s=].*asd-dev-session'
+    $starts = @{}; $start = -1; $inBlock = $false
     for ($n = 0; $n -lt $old.Count; $n++) {
         $l = $old[$n]
         if ($l -eq $BlockBegin) { $inBlock = $true; continue }
         if ($l -eq $BlockEnd) { $inBlock = $false; continue }
-        if (-not $inBlock -and $l -match '^\s*[Hh][Oo][Ss][Tt][\s=].*asd-dev-session') { $legacy += ('{0}: {1}' -f ($n + 1), $l) }
+        if ($inBlock) { continue }
+        if ($l -match $hostRe) { $start = -1; if ($l -match $ourRe) { $start = $n; $starts[$n] = $false } ; continue }
+        if ($start -ge 0 -and $l -match 'wato_slurm_dev') { $starts[$start] = $true }
     }
-    $disable = $false
-    if ($legacy.Count -gt 0) {
-        Warn "$config has an older asd-dev-session entry (from the previous tooling):"
-        $legacy | ForEach-Object { Write-Host "    $_" }
-        $disable = Confirm 'Comment it out so it does not interfere?'
+    $disable = @{}
+    foreach ($n in ($starts.Keys | Sort-Object)) {
+        if ($starts[$n]) {
+            Warn "$config has an asd-dev-session entry from the previous tooling (line $($n + 1): $($old[$n]))."
+            if ($ArgAdd) { Warn 'left as it is; run setup.cmd once to clean it up.' }
+            elseif ($AssumeYes) { Info '  commenting it out (--yes)'; $disable[$n] = $true }
+            elseif (-not [Console]::IsInputRedirected) { if (Confirm 'Comment it out so it does not interfere?') { $disable[$n] = $true } }
+            else { Warn 'left as it is (no console to ask); run setup.cmd in a terminal, or with --yes, to comment it out.' }
+        } else {
+            Info "  your own entry '$($old[$n].Trim())' (line $($n + 1)) stays; the asd-dev entries come first, so theirs win."
+        }
     }
 
     $rest = New-Object System.Collections.Generic.List[string]
     $inBlock = $false; $skipBlank = $false; $inLegacy = $false
-    foreach ($l in $old) {
+    for ($n = 0; $n -lt $old.Count; $n++) {
+        $l = $old[$n]
         if ($l -eq $BlockBegin) { $inBlock = $true; continue }
         if ($inBlock) { if ($l -eq $BlockEnd) { $inBlock = $false; $skipBlank = $true }; continue }
         if ($skipBlank -and $l -match '^\s*$') { continue }
         $skipBlank = $false
-        if ($disable -and $l -match '^\s*([Hh][Oo][Ss][Tt]|[Mm][Aa][Tt][Cc][Hh])[\s=]') {
-            $inLegacy = ($l -match '^\s*[Hh][Oo][Ss][Tt][\s=].*asd-dev-session')
-        }
+        if ($l -match $hostRe) { $inLegacy = $disable.ContainsKey($n) }
         if ($inLegacy) { $rest.Add("# [disabled by asd-dev setup] $l") } else { $rest.Add($l) }
     }
     while ($rest.Count -gt 0 -and $rest[$rest.Count - 1] -eq '') { $rest.RemoveAt($rest.Count - 1) }
@@ -348,6 +359,10 @@ if ($ArgAdd) {
     }
     $script:ClusterUser = Previous-Value $Config 'User'
     if (-not $script:ClusterUser) { Fail "$Config has no asd-dev entries yet; run setup.cmd first." }
+    if (Previous-BlockLine $Config "asd-dev proxy ('%h'|%h)") {
+        Fail "$Config has asd-dev entries from an earlier version (with %h)." @(
+            'Run setup.cmd once (without --add-session); it keeps your settings and sessions.')
+    }
     $script:LoginHostName = Previous-Value $Config 'HostName'
     $script:ClusterDir = Previous-ClusterDir $Config
     if (-not $script:ClusterDir) { $script:ClusterDir = '.asd-dev' }

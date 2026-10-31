@@ -232,7 +232,7 @@ EOF
 
 # install_block CONFIG_FILE BLOCK_TEXT: puts the block at the top, replacing an older one.
 install_block() {
-    local config=$1 block=$2 dir tmp legacy
+    local config=$1 block=$2 dir tmp
     dir=$(dirname "$config")
     if [[ ! -d $dir ]]; then
         mkdir -p "$dir"
@@ -241,28 +241,52 @@ install_block() {
     [[ -e $config ]] || { : >"$config"; chmod 600 "$config"; }
     tmp=$(mktemp "${TMPDIR:-/tmp}/asd-dev-config.XXXXXX")
 
-    # Old start_interactive_session.sh setups added their own "Host asd-dev-session" block.
+    # Entries for our host names outside the block. The old setup_slurm_ssh.sh wrote one whose
+    # ProxyCommand looks up wato_slurm_dev; only that one is offered for commenting out, and only
+    # with the user's consent. A user's own entry is never changed (ours come first and win).
     # The awk scripts compare lines without a trailing CR, so CRLF files (Windows) work too.
-    legacy=$(awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+    local entries
+    entries=$(awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
         { l = $0; sub(/\r$/, "", l) }
         l == b { inb = 1 } l == e { inb = 0; next }
-        !inb && tolower(l) ~ /^[ \t]*host[ \t=].*asd-dev-session/ { print NR": "l }' "$config")
-    local disable=no
-    if [[ -n $legacy ]]; then
-        warn "$config has an older asd-dev-session entry (from the previous tooling):"
-        printf '    %s\n' "$legacy" >&2
-        if confirm "Comment it out so it does not interfere?"; then disable=yes; fi
-    fi
+        inb { next }
+        tolower(l) ~ /^[ \t]*(host|match)[ \t=]/ {
+            if (start) print start "|" old "|" line
+            start = 0; old = 0
+            if (tolower(l) ~ /^[ \t]*host[ \t=].*asd-dev-session/) { start = NR; line = l }
+            next
+        }
+        start && l ~ /wato_slurm_dev/ { old = 1 }
+        END { if (start) print start "|" old "|" line }' "$config")
+    local disable="" n is_old line
+    while IFS='|' read -r n is_old line; do
+        [[ -n $n ]] || continue
+        if [[ $is_old == 1 ]]; then
+            warn "$config has an asd-dev-session entry from the previous tooling (line $n: $line)."
+            if [[ -n $ARG_ADD ]]; then
+                warn "left as it is; run ./setup.sh once to clean it up."
+            elif [[ -t 0 && $ASSUME_YES != yes ]]; then
+                if confirm "Comment it out so it does not interfere?"; then disable+=" $n"; fi
+            elif [[ $ASSUME_YES == yes ]]; then
+                info "  commenting it out (--yes)"
+                disable+=" $n"
+            else
+                warn "left as it is (no terminal to ask); run setup in a terminal, or with --yes, to comment it out."
+            fi
+        else
+            info "  your own entry '$line' (line $n) stays; the asd-dev entries come first, so theirs win."
+        fi
+    done <<<"$entries"
 
     {
         printf '%s\n\n' "$block"
-        awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v disable="$disable" '
+        awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v disable="$disable " '
             { l = $0; sub(/\r$/, "", l) }
             l == b { inb = 1; next }
             inb { if (l == e) { inb = 0; skipblank = 1 } next }
             skipblank && l ~ /^[ \t]*$/ { next }
             { skipblank = 0 }
-            disable == "yes" && tolower(l) ~ /^[ \t]*(host|match)[ \t=]/ { inlegacy = (tolower(l) ~ /^[ \t]*host[ \t=].*asd-dev-session/) }
+            tolower(l) ~ /^[ \t]*(host|match)[ \t=]/ { inlegacy = (index(disable, " " NR " ") > 0) }
             inlegacy { print "# [disabled by asd-dev setup] " $0; next }
             { print }' "$config"
     } >"$tmp"
@@ -333,6 +357,9 @@ previous_cluster_dir() { # the helper dir in our block's ProxyCommand
         }' "$1"
 }
 
+# Blocks written before the per-session entries pass %h, which a crafted host name could abuse.
+has_old_layout() { grep -qE "asd-dev proxy ('%h'|%h)" "$1" 2>/dev/null; }
+
 previous_sessions() { # names of the named sessions that have their own entry in our block
     [[ -f $1 ]] || return 0
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
@@ -357,6 +384,10 @@ previous_proxy_config() { # the -F file in our block's ProxyCommand, if any
 add_session_to() { # add_session_to CONFIG NAME
     local config=$1 name=$2 known proxy
     grep -q "^$BLOCK_BEGIN" "$config" 2>/dev/null || return 1
+    if has_old_layout "$config"; then
+        fail "$config has asd-dev entries from an earlier version (with %h)." \
+            "Run ./setup.sh once (without --add-session); it keeps your settings and sessions."
+    fi
     CLUSTER_USER=$(previous_value "$config" user)
     LOGIN_HOSTNAME=$(previous_value "$config" hostname)
     CLUSTER_DIR=$(previous_cluster_dir "$config")
@@ -506,6 +537,16 @@ main() {
     [[ $FORWARD_AGENT == no ]] || FORWARD_AGENT=yes
 
     SESSION_NAMES=$(previous_sessions "$config")
+    # On WSL the Windows config may hold sessions added there (asd-dev.cmd add); keep both lists.
+    if [[ $ENV_KIND == wsl && $DO_WINDOWS == yes ]]; then
+        local wpc wn
+        wpc=$(windows_profile)
+        if [[ -n $wpc ]]; then
+            for wn in $(previous_sessions "$wpc/.ssh/config"); do
+                [[ " $SESSION_NAMES " == *" $wn "* ]] || SESSION_NAMES+=" $wn"
+            done
+        fi
+    fi
 
     # --- helper directory in the cluster home
     CLUSTER_DIR=${ARG_CLUSTER_DIR:-$(previous_cluster_dir "$config")}

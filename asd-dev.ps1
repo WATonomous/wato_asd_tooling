@@ -54,8 +54,16 @@ function Invoke-Remote([string[]]$words) {
 
 # A named session needs its own host entry before ssh or VS Code can reach it.
 function Ensure-Host([string]$name) {
-    if (-not $name -or $name -eq 'default') { return }
     $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $dflt = & ssh.exe @SshArgs -T -G asd-dev-session 2>$null | Where-Object { $_ -match '^proxycommand ' } }
+    finally { $ErrorActionPreference = $old }
+    # Entries from before the per-session layout pass %h, which a crafted host name could abuse.
+    if ($dflt -and ($dflt -match "asd-dev proxy ('%h'|%h)")) {
+        Write-Host 'asd-dev: your ssh config has asd-dev entries from an earlier version; run setup.cmd again (it keeps your settings).'
+        exit 1
+    }
+    if (-not $name -or $name -eq 'default') { return }
     $ErrorActionPreference = 'Continue'
     try { $pc = & ssh.exe @SshArgs -T -G "asd-dev-session-$name" 2>$null | Where-Object { $_ -match '^proxycommand ' } }
     finally { $ErrorActionPreference = $old }
@@ -97,7 +105,10 @@ switch ($cmd) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
             elseif ($rest[$i] -eq '--folder') { $folder = $rest[++$i] }
             elseif ($valued -contains $rest[$i]) { $words += $rest[$i]; $words += $rest[++$i] }
-            elseif ($rest[$i] -eq '--name' -or $rest[$i] -eq '-n') { $words += $rest[$i]; $name = $rest[++$i]; $words += $name }
+            elseif ($rest[$i] -eq '--name' -or $rest[$i] -eq '-n') {
+                if ($i + 1 -ge $rest.Count) { Write-Host 'asd-dev: --name needs a session name'; exit 1 }
+                $words += $rest[$i]; $name = $rest[++$i]; $words += $name
+            }
             elseif ($rest[$i].StartsWith('-')) { $words += $rest[$i] }
             else { if (-not $name) { $name = $rest[$i] }; $words += $rest[$i] }
         }

@@ -72,6 +72,11 @@ open_code() { # open_code HOST_ALIAS FOLDER
 
 # A named session needs its own host entry before ssh or VS Code can reach it.
 ensure_host() { # ensure_host NAME
+    # Entries from before the per-session layout pass %h, which a crafted host name could abuse.
+    if ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null </dev/null | grep -qE "^proxycommand .*asd-dev proxy ('%h'|%h)"; then
+        echo "asd-dev: your ssh config has asd-dev entries from an earlier version; run ./setup.sh again (it keeps your settings)." >&2
+        exit 1
+    fi
     [[ -n $1 && $1 != default ]] || return 0
     if ! ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "asd-dev-session-$1" 2>/dev/null </dev/null | grep -q '^proxycommand '; then
         local cfg=()
