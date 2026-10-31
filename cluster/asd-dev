@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.0.0-rc.2
+ASD_DEV_VERSION=2.0.0-rc.3
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=15
+ASD_DEV_SERIAL=16
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -850,16 +850,21 @@ saving_off() { # saving_off REASON WHAT_TO_DO
     queue_notice "asd-dev: $1. Docker started EMPTY, and saving docker state is OFF for this session, so your saved state is kept. $2"
 }
 
-# Renames the saved state (and its records) to <file>.old-<time>, keeping only the newest such copy.
+# Renames the saved state to <file>.old-<time>. Keeps this copy and the one before it; older
+# copies are deleted (state files can be many GB on the shared drive).
 move_state_aside() { # move_state_aside WHY
-    local file old
+    local file old gone
     file=$(docker_state_file)
     old="$file.old-$(date '+%Y%m%d-%H%M%S')"
-    find "$DOCKER_STATE_DIR" -maxdepth 1 -name "$(basename "$file").old-*" -delete 2>/dev/null || true
     mv -f "$file" "$old"
     rm -f "$file.size" "$file.failures"
-    log "[docker] $1: moved $file aside to $old; docker starts empty and saves a new state at the end"
-    queue_notice "asd-dev: $1, so the saved docker state was moved aside to $old (delete it when you no longer need it). Docker starts empty and saves a new state when this session ends."
+    # shellcheck disable=SC2012 # our own file names; the timestamp makes name order age order
+    gone=$(ls -1 "$file".old-* 2>/dev/null | sort -r | tail -n +3 || true)
+    if [[ -n $gone ]]; then
+        printf '%s\n' "$gone" | while IFS= read -r f; do rm -f "$f"; done
+    fi
+    log "[docker] $1: moved $file aside to $old${gone:+; deleted older copies: $(printf '%s' "$gone" | tr '\n' ' ')}"
+    queue_notice "asd-dev: $1, so the saved docker state was moved aside to $old. The two newest such copies are kept (delete them when you no longer need them); older ones are deleted. Docker starts empty and saves a new state when this session ends."
 }
 
 load_docker_state() {
