@@ -236,9 +236,9 @@ install_block() {
     dir=$(dirname "$config")
     if [[ ! -d $dir ]]; then
         mkdir -p "$dir"
-        chmod 700 "$dir"
+        chmod 700 "$dir" 2>/dev/null || true
     fi
-    [[ -e $config ]] || { : >"$config"; chmod 600 "$config"; }
+    [[ -e $config ]] || { : >"$config"; chmod 600 "$config" 2>/dev/null || true; }
     tmp=$(mktemp "${TMPDIR:-/tmp}/asd-dev-config.XXXXXX")
 
     # Entries for our host names outside the block. The old setup_slurm_ssh.sh wrote one whose
@@ -299,7 +299,9 @@ install_block() {
     if [[ -s $config ]]; then
         local backup
         backup="$config.asd-dev-backup-$(date '+%Y%m%d-%H%M%S')"
-        cp -p "$config" "$backup"
+        # Not cp -p: on /mnt/c a WSL user other than the distro's default may not set the times.
+        cp "$config" "$backup"
+        chmod 600 "$backup" 2>/dev/null || true
         info "  backed up the old file to $backup"
         # Keep the three newest backups.
         # shellcheck disable=SC2012 # names we created, newest first
