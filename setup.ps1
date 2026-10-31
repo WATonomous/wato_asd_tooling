@@ -50,7 +50,7 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --no-agent-forwarding  do not forward your SSH agent into sessions (it is forwarded by default so
                      git over SSH works there; root on the compute node could use it meanwhile)
   --add-session NAME only add the host asd-dev-session-NAME for a named session to the ssh config
-                     (.\asd-dev.cmd add NAME and .\asd-dev.cmd start NAME call this)
+                     (.\asd-dev.cmd add --name NAME and .\asd-dev.cmd start --name NAME call this)
   --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
                      independent install, e.g. to test another version)
   --yes              do not ask questions; use defaults and the values given
@@ -153,7 +153,7 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         '',
         '# One entry per session, each passing its own name as a fixed word: no host name that anyone',
         '# types (a git submodule URL, say) reaches a shell, on any client. Add a named session with',
-        '# .\asd-dev.cmd add NAME (.\asd-dev.cmd start NAME does it too).'
+        '# .\asd-dev.cmd add --name NAME (.\asd-dev.cmd start --name NAME does it too).'
     )
     $hosts = 'asd-dev-session'
     foreach ($n in @('default') + @($script:SessionNames)) {

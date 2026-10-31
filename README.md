@@ -116,24 +116,28 @@ every setting is in `~/.asd-dev/config` on the cluster.
 
 ## More than one session
 
-Give a session a name: `./asd-dev start gpu --vram 8192`. The first time, this also adds the host
-`asd-dev-session-gpu` to your SSH config, and VS Code lists it from then on. Host names are
-lowercase (ssh matches them exactly). `./asd-dev add gpu` adds the host without starting
-anything (needed when you start a named session on the cluster side). Stop it with
-`./asd-dev stop gpu`. Each name has its own saved docker state.
+Give a session a name with `--name`: `./asd-dev start --name carla --tmpdisk 40960 --vram 8192`.
+The first time, this also adds the host `asd-dev-session-carla` to your SSH config, and VS Code
+lists it from then on. Names are lowercase (ssh matches host names exactly). Every command that
+acts on one session takes the same `--name`, for example `./asd-dev stop --name carla`; without
+it a command means the default session (in a session's terminal: that session).
+`./asd-dev add --name carla` adds the host without starting anything (needed when you start a
+named session on the cluster side). Each name has its own saved docker state.
 
 ## Commands
 
-On your computer (`.\asd-dev.cmd` on Windows) or, without the `./`, in a session's terminal:
+On your computer (`.\asd-dev.cmd` on Windows) or, without the `./`, in a session's terminal
+(`code`, `add` and `ssh` only on your computer):
 
 | Command | What it does |
 | --- | --- |
-| `./asd-dev start [NAME] [options]` | start a session, wait until it is ready, open VS Code |
-| `./asd-dev stop [NAME]` | stop a session (`--now` skips saving docker state, `--all` stops all) |
-| `./asd-dev status` | list your sessions with node, time left and resources |
-| `./asd-dev logs [NAME]` | show a session's log (`-f` to follow) |
+| `./asd-dev start [--name NAME] [options]` | start a session, wait until it is ready, open VS Code |
+| `./asd-dev stop [--name NAME]` | stop a session (`--now` skips saving docker state, `--all` stops all) |
+| `./asd-dev status [--name NAME]` | list your sessions with node, time left and resources |
+| `./asd-dev logs [--name NAME]` | show a session's log (`-f` to follow) |
 | `./asd-dev config [key=value ...]` | show or change your defaults |
-| `./asd-dev add NAME` | add the host `asd-dev-session-NAME` for a named session to your SSH config |
+| `./asd-dev code [--name NAME]` | open VS Code in a running session (`--folder PATH` picks the folder) |
+| `./asd-dev add --name NAME` | add the host `asd-dev-session-NAME` for a named session to your SSH config |
 | `./asd-dev ssh [--name NAME] [command]` | open a terminal in a session, or run a command there (same as `ssh asd-dev-session`) |
 
 `ssh asd-dev-session` also works in any terminal on your computer, and so do `scp` and `rsync`.
@@ -152,7 +156,7 @@ is in its log: View > Output, choose **Remote - SSH**, and look for lines starti
 | `Permission denied (publickey)` | Wrong username or a key that is not registered. Run setup again; it checks both. |
 | `.asd-dev/bin/asd-dev: No such file or directory` | The helper is missing from your cluster home. Run setup again. |
 | `Host key verification failed` | The session host key changed (for example `~/.asd-dev` was deleted). Run setup again. |
-| `Could not resolve hostname asd-dev-session...` | Your SSH config has no entry for that host. Run setup again, or `./asd-dev add NAME`. |
+| `Could not resolve hostname asd-dev-session...` | Your SSH config has no entry for that host. Run setup again, or `./asd-dev add --name NAME`. |
 | `Disk quota exceeded` in your home | VS Code keeps its server (about 1.3 GB per VS Code version) in `~/.vscode-server`, in your 20 GiB home. Delete old versions there. |
 | `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `./asd-dev logs`. |
 

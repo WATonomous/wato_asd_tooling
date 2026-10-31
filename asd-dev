@@ -12,18 +12,19 @@ usage() {
     cat <<'EOF'
 Usage: ./asd-dev COMMAND [args]
 
-  start [NAME] [options]  start a session (if needed), wait until it is ready, open VS Code
+  start [--name NAME] [options]  start a session, wait until it is ready, open VS Code
                           options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
                           --gpu-type TYPE --tmpdisk MiB --no-docker-state; --no-code; --folder PATH
-  code [NAME] [--folder PATH]  open VS Code in a running session
-  add NAME                add the host asd-dev-session-NAME for a named session (start does it too)
-  stop [NAME] [--now]     stop a session (--all: every session)
-  status                  list your sessions
-  logs [NAME] [-f]        show a session's log
+  code [--name NAME] [--folder PATH]  open VS Code in a running session
+  add --name NAME         add the host asd-dev-session-NAME for a named session (start does it too)
+  stop [--name NAME] [--now]  stop a session (--all: every session)
+  status [--name NAME]    list your sessions
+  logs [--name NAME] [-f] show a session's log
   config [key=value ...]  show or change your session defaults (stored on the cluster)
   ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run ./setup.sh
 
+Without --name a command means the default session; --name gpu means asd-dev-session-gpu.
 Connecting VS Code only connects: start a session first with "start"; it ends at its time
 limit or with "stop".
 EOF
@@ -48,6 +49,8 @@ remote() { # runs the cluster helper with the given arguments
     fi
     return "$rc"
 }
+
+unexpected() { echo "asd-dev: ERROR: unexpected argument '$1'; to name a session use --name $1" >&2; exit 1; }
 
 alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; else printf 'asd-dev-session-%s' "$1"; fi; }
 
@@ -95,9 +98,9 @@ cmd_start() {
             --folder) folder=${2:?--folder needs a path}; shift ;;
             --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --partition)
                 args+=("$1" "${2:?$1 needs a value}"); shift ;;
-            --name | -n) name=${2:?--name needs a value}; args+=("$1" "$2"); shift ;;
+            --name) name=${2:?--name needs a value}; args+=("$1" "$2"); shift ;;
             -*) args+=("$1") ;;
-            *) [[ -z $name ]] && name=$1; args+=("$1") ;;
+            *) unexpected "$1" ;;
         esac
         shift
     done
@@ -113,8 +116,9 @@ cmd_code() {
     while (($#)); do
         case $1 in
             --folder) folder=${2:?--folder needs a path}; shift ;;
+            --name) name=${2:?--name needs a value}; shift ;;
             -*) echo "unknown option $1" >&2; exit 1 ;;
-            *) name=$1 ;;
+            *) unexpected "$1" ;;
         esac
         shift
     done
@@ -124,9 +128,17 @@ cmd_code() {
 
 cmd_ssh() {
     local name=""
-    if [[ ${1:-} == --name || ${1:-} == -n ]]; then name=${2:?--name needs a value}; shift 2; fi
+    if [[ ${1:-} == --name ]]; then name=${2:?--name needs a value}; shift 2; fi
     ensure_host "$name"
     exec ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$(alias_for "$name")" "$@"
+}
+
+cmd_add() {
+    case ${1:-} in
+        --name) ensure_host "$(printf '%s' "${2:?--name needs a value}" | tr '[:upper:]' '[:lower:]')" ;;
+        "" | -*) usage >&2; exit 1 ;;
+        *) unexpected "$1" ;;
+    esac
 }
 
 main() {
@@ -136,7 +148,7 @@ main() {
         start) cmd_start "$@" ;;
         code | open) cmd_code "$@" ;;
         ssh | shell) cmd_ssh "$@" ;;
-        add) [[ -n ${1:-} ]] || { usage >&2; exit 1; }; ensure_host "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" ;;
+        add) cmd_add "$@" ;;
         stop | status | logs | log | config | version) remote "$cmd" "$@" ;;
         setup) exec "$REPO_DIR/setup.sh" "$@" ;;
         help | -h | --help) usage ;;

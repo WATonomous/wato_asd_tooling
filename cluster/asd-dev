@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.1.0-rc.2
+ASD_DEV_VERSION=2.1.0-rc.3
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=18
+ASD_DEV_SERIAL=19
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -194,7 +194,7 @@ check_name() {
         die "invalid session name '$1'" "Use up to 20 lowercase letters, digits, '-' or '_'."
 }
 
-with_name() { if [[ $2 == default ]]; then printf '%s' "$1"; else printf '%s %s' "$1" "$2"; fi; }
+with_name() { if [[ $2 == default ]]; then printf '%s' "$1"; else printf '%s --name %s' "$1" "$2"; fi; }
 job_name() { if [[ $1 == default ]]; then printf '%s' "$JOB_PREFIX"; else printf '%s' "$JOB_PREFIX-$1"; fi; }
 host_alias() { if [[ $1 == default ]]; then printf 'asd-dev-session'; else printf 'asd-dev-session-%s' "$1"; fi; }
 name_from_job_name() { if [[ $1 == "$JOB_PREFIX" ]]; then printf 'default'; else printf '%s' "${1#"$JOB_PREFIX"-}"; fi; }
@@ -357,14 +357,14 @@ cmd_proxy() {
     exit "$rc"
 }
 
-# Parses start/stop/logs flags into FLAG_* and NAME.
+# Parses start/stop/status/logs flags into FLAG_* and NAME.
 parse_session_flags() {
     # Inside a session, "asd-dev stop" means this session (sshd's SetEnv provides ASD_DEV_SESSION).
-    NAME=${ASD_DEV_SESSION:-default} FLAG_SETTINGS=() FLAG_NOW=no FLAG_JOB="" FLAG_ALL=no FLAG_FOLLOW=no
-    RESET_DOCKER_STATE=no
+    NAME=${ASD_DEV_SESSION:-default} NAME_GIVEN=no FLAG_SETTINGS=() FLAG_NOW=no FLAG_JOB="" FLAG_ALL=no
+    FLAG_FOLLOW=no RESET_DOCKER_STATE=no
     while (($#)); do
         case $1 in
-            --name | -n) NAME=${2:?--name needs a value}; shift ;;
+            --name) NAME=${2:?--name needs a value} NAME_GIVEN=yes; shift ;;
             --cpus) FLAG_SETTINGS+=("cpus=${2:?$1 needs a value}"); shift ;;
             --mem) FLAG_SETTINGS+=("mem=${2:?$1 needs a value}"); shift ;;
             --time) FLAG_SETTINGS+=("time=${2:?$1 needs a value}"); shift ;;
@@ -383,7 +383,7 @@ parse_session_flags() {
             -f | --follow) FLAG_FOLLOW=yes ;;
             -h | --help) usage; exit 0 ;;
             -*) die "unknown option '$1'" "Run: $(hint help)" ;;
-            *) NAME=$1 ;;
+            *) die "unexpected argument '$1'; to name a session use --name $1" ;;
         esac
         shift
     done
@@ -437,7 +437,7 @@ cmd_start() {
     say "ready: connect VS Code to $(host_alias "$NAME") (job $J_ID on $J_NODE, $J_LEFT left; terminal: ssh $(host_alias "$NAME"))."
     say "It ends at its time limit or with: $(hint "$(with_name stop "$NAME")")"
     if [[ $NAME != default && -n ${SLURM_JOB_ID:-} ]]; then
-        say "VS Code lists $(host_alias "$NAME") once your laptop has its entry: $(laptop_hint "add $NAME")."
+        say "VS Code lists $(host_alias "$NAME") once your laptop has its entry: $(laptop_hint "add --name $NAME")."
     fi
     printf 'ASD_DEV_READY %s %s\n' "$(host_alias "$NAME")" "$J_ID"
 }
@@ -500,10 +500,16 @@ cmd_stop() {
 }
 
 cmd_status() {
+    parse_session_flags "$@"
     local lines line cpus mem gres
     lines=$(all_session_jobs)
+    if [[ $NAME_GIVEN == yes ]]; then lines=$(printf '%s\n' "$lines" | awk -F'|' -v j="$(job_name "$NAME")" '$8 == j'); fi
     if [[ -z $lines ]]; then
-        say "no session is running. Start one: $(hint start)"
+        if [[ $NAME_GIVEN == yes ]]; then
+            say "no '$NAME' session is running. Start it: $(hint "$(with_name start "$NAME")")"
+        else
+            say "no session is running. Start one: $(hint start)"
+        fi
         return 0
     fi
     printf '%-10s %-8s %-10s %-14s %-12s %s\n' SESSION JOB STATE NODE TIME_LEFT RESOURCES >&2
@@ -515,7 +521,7 @@ cmd_status() {
             "$J_STATE" "${J_NODE:-"-"}" "$J_LEFT" "$cpus" "$mem" "${gres#gres/}" >&2
         if [[ $J_STATE == PENDING ]]; then say "  job $J_ID is $(explain_reason "$J_REASON" || true)"; fi
     done <<<"$lines"
-    say "Connect: VS Code > Remote Explorer > SSH > asd-dev-session[-NAME]. Stop: $(hint "stop [NAME]")"
+    say "Connect: VS Code > Remote Explorer > SSH > asd-dev-session[-NAME]. Stop: $(hint "stop [--name NAME]")"
 }
 
 cmd_logs() {
@@ -970,11 +976,11 @@ asd-dev $ASD_DEV_VERSION: VS Code dev sessions inside WATcloud SLURM jobs.
 On your laptop run this as ./asd-dev (or .\asd-dev.cmd) in your wato_asd_tooling folder; in a
 session's terminal as asd-dev; on a login node as ~/$INSTALL_ID/bin/asd-dev.
 
-  asd-dev start [NAME] [options]   start a session and wait until VS Code can connect to it
-  asd-dev stop [NAME] [--now]      stop a session (saves docker state first unless --now)
+  asd-dev start [--name NAME] [options]  start a session and wait until VS Code can connect to it
+  asd-dev stop [--name NAME] [--now]     stop a session (saves docker state first unless --now)
   asd-dev stop --all | --job ID
-  asd-dev status                   list your sessions
-  asd-dev logs [NAME] [-f]         show a session's log
+  asd-dev status [--name NAME]           list your sessions
+  asd-dev logs [--name NAME] [-f]        show a session's log
   asd-dev config [key=value ...]   show or change your defaults ($CONFIG)
   asd-dev version
 
@@ -984,7 +990,8 @@ Options for start (one-off; use "asd-dev config" to change defaults):
   --no-docker-state  --reset-docker-state  --partition NAME
 
 Connecting VS Code to asd-dev-session[-NAME] only connects; it never starts a session.
-NAME runs more than one session: "asd-dev start gpu" is reached as "asd-dev-session-gpu".
+--name runs more than one session: "asd-dev start --name gpu" is reached as "asd-dev-session-gpu".
+Without --name it is the default session (in a session's terminal: that session).
 EOF
 }
 

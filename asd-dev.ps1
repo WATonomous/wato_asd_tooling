@@ -14,18 +14,19 @@ function Show-Usage {
     @'
 Usage: .\asd-dev.cmd COMMAND [args]
 
-  start [NAME] [options]  start a session (if needed), wait until it is ready, open VS Code
+  start [--name NAME] [options]  start a session, wait until it is ready, open VS Code
                           options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
                           --gpu-type TYPE --tmpdisk MiB --no-docker-state; --no-code; --folder PATH
-  code [NAME] [--folder PATH]  open VS Code in a running session
-  add NAME                add the host asd-dev-session-NAME for a named session (start does it too)
-  stop [NAME] [--now]     stop a session (--all: every session)
-  status                  list your sessions
-  logs [NAME] [-f]        show a session's log
+  code [--name NAME] [--folder PATH]  open VS Code in a running session
+  add --name NAME         add the host asd-dev-session-NAME for a named session (start does it too)
+  stop [--name NAME] [--now]  stop a session (--all: every session)
+  status [--name NAME]    list your sessions
+  logs [--name NAME] [-f] show a session's log
   config [key=value ...]  show or change your session defaults (stored on the cluster)
   ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run setup
 
+Without --name a command means the default session; --name gpu means asd-dev-session-gpu.
 Connecting VS Code only connects: start a session first with "start"; it ends at its time
 limit or with "stop".
 '@ | Write-Host
@@ -76,6 +77,11 @@ function Ensure-Host([string]$name) {
     }
 }
 
+function Stop-Unexpected([string]$word) {
+    [Console]::Error.WriteLine("asd-dev: ERROR: unexpected argument '$word'; to name a session use --name $word")
+    exit 1
+}
+
 function Get-Alias([string]$name) { if (-not $name -or $name -eq 'default') { 'asd-dev-session' } else { "asd-dev-session-$name" } }
 
 function Open-Code([string]$alias, [string]$folder) {
@@ -107,12 +113,12 @@ switch ($cmd) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
             elseif ($rest[$i] -eq '--folder') { $folder = $rest[++$i] }
             elseif ($valued -contains $rest[$i]) { $words += $rest[$i]; $words += $rest[++$i] }
-            elseif ($rest[$i] -eq '--name' -or $rest[$i] -eq '-n') {
+            elseif ($rest[$i] -eq '--name') {
                 if ($i + 1 -ge $rest.Count) { Write-Host 'asd-dev: --name needs a session name'; exit 1 }
                 $words += $rest[$i]; $name = $rest[++$i]; $words += $name
             }
             elseif ($rest[$i].StartsWith('-')) { $words += $rest[$i] }
-            else { if (-not $name) { $name = $rest[$i] }; $words += $rest[$i] }
+            else { Stop-Unexpected $rest[$i] }
         }
         Ensure-Host $name.ToLowerInvariant()
         # stdout carries only the "ASD_DEV_READY <alias> <job>" line; messages go to stderr (the console).
@@ -125,14 +131,17 @@ switch ($cmd) {
     { $_ -in @('code', 'open') } {
         $name = ''; $folder = ''
         for ($i = 0; $i -lt $rest.Count; $i++) {
-            if ($rest[$i] -eq '--folder') { $folder = $rest[++$i] } else { $name = $rest[$i] }
+            if ($rest[$i] -eq '--folder') { $folder = $rest[++$i] }
+            elseif ($rest[$i] -eq '--name') { $name = $rest[++$i] }
+            elseif ($rest[$i].StartsWith('-')) { Write-Host "unknown option $($rest[$i])"; exit 1 }
+            else { Stop-Unexpected $rest[$i] }
         }
         Ensure-Host $name
         Open-Code (Get-Alias $name) $folder
     }
     { $_ -in @('ssh', 'shell') } {
         $name = ''
-        if ($rest.Count -gt 1 -and ($rest[0] -eq '--name' -or $rest[0] -eq '-n')) { $name = $rest[1]; $rest = @($rest | Select-Object -Skip 2) }
+        if ($rest.Count -gt 1 -and $rest[0] -eq '--name') { $name = $rest[1]; $rest = @($rest | Select-Object -Skip 2) }
         Ensure-Host $name
         & ssh.exe @SshArgs (Get-Alias $name) @rest
         exit $LASTEXITCODE
@@ -142,8 +151,9 @@ switch ($cmd) {
         exit $LASTEXITCODE
     }
     'add' {
-        if ($rest.Count -lt 1) { Show-Usage; exit 1 }
-        Ensure-Host $rest[0].ToLowerInvariant()
+        if ($rest.Count -ge 2 -and $rest[0] -eq '--name') { Ensure-Host $rest[1].ToLowerInvariant() }
+        elseif ($rest.Count -ge 1 -and -not $rest[0].StartsWith('-')) { Stop-Unexpected $rest[0] }
+        else { Show-Usage; exit 1 }
     }
     'setup' {
         & (Join-Path $RepoDir 'setup.ps1') @rest
