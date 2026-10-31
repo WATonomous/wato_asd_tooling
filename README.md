@@ -114,6 +114,26 @@ stops a program from using more, so stay within what you asked for.
 A running session keeps its resources; to change them, stop it and start again. The meaning of
 every setting is in `~/.asd-dev/config` on the cluster.
 
+## Docker and the monorepo's images
+
+Docker runs inside the session, and VS Code uses it too: `DOCKER_HOST` is set for VS Code's
+server, so the terminal, the Docker extension and Dev Containers' **Attach to Running
+Container** reach the session's docker (attaching was checked from the command line, not in
+VS Code's window). Images, containers and each attached container's VS Code server (a few
+hundred MB) all take space in the session's `/tmp`.
+
+The monorepo's module images on GHCR (`ghcr.io/watonomous/wato_monorepo/...`) are private. To
+pull them, log in once in a session's terminal with a GitHub classic personal access token that
+has the `read:packages` scope (your GitHub account needs access to WATonomous's packages):
+
+```bash
+docker login ghcr.io -u <your GitHub username> --password-stdin   # paste the token, Enter, Ctrl-D
+```
+
+The login is saved in `~/.docker/config.json` in your cluster home, so later sessions have it.
+The monorepo's DEVELOPING.md asks for `write:packages`, which is only needed to push images.
+Without a login `watod build` still works: it builds from the public base image, only slower.
+
 ## More than one session
 
 Give a session a name with `--name`: `./asd-dev start --name carla --tmpdisk 40960 --vram 8192`.
