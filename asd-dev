@@ -38,7 +38,8 @@ helper_path() {
 remote() { # runs the cluster helper with the given arguments
     local cmd a rc=0
     cmd=$(helper_path)
-    cmd=${cmd:-.asd-dev/bin/asd-dev}
+    # --from tells the helper to print command hints in this wrapper's form (./asd-dev ...).
+    cmd="${cmd:-.asd-dev/bin/asd-dev} --from=unix"
     for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
     ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T asd-dev-login "$cmd" || rc=$?
     if ((rc == 255)); then

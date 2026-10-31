@@ -45,7 +45,8 @@ function Invoke-Remote([string[]]$words) {
     foreach ($w in $words) {
         if ($w -notmatch '^[A-Za-z0-9_:.=/+-]*$') { Write-Host "asd-dev: unsupported character in '$w'"; exit 1 }
     }
-    $cmd = (Get-HelperPath) + ' ' + ($words -join ' ')
+    # --from tells the helper to print command hints in this wrapper's form (.\asd-dev.cmd ...).
+    $cmd = (Get-HelperPath) + ' --from=windows ' + ($words -join ' ')
     & ssh.exe @SshArgs -T asd-dev-login $cmd
     if ($LASTEXITCODE -eq 255) {
         [Console]::Error.WriteLine('asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN.')

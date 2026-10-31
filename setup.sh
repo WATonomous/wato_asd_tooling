@@ -622,7 +622,7 @@ main() {
     for s in ${CLUSTER_SETTINGS[@]+"${CLUSTER_SETTINGS[@]}"}; do settings_str+=" $s"; done
     set +o errexit
     out=$(ssh -F "$TMPCFG" -T asd-dev-login \
-        "mkdir -p $CLUSTER_DIR/tmp && tr -d '\\r' > $CLUSTER_DIR/tmp/asd-dev.new && bash $CLUSTER_DIR/tmp/asd-dev.new install$settings_str" \
+        "mkdir -p $CLUSTER_DIR/tmp && tr -d '\\r' > $CLUSTER_DIR/tmp/asd-dev.new && bash $CLUSTER_DIR/tmp/asd-dev.new --from=unix install$settings_str" \
         <"$HELPER" 2>&1)
     rc=$?
     set -o errexit

@@ -502,7 +502,7 @@ try {
     $settings = ''
     foreach ($s in $ClusterSettings) { $settings += " $s" }
     $d = $script:ClusterDir
-    $remote = "mkdir -p $d/tmp && tr -d '\r' < .asd-dev-upload > $d/tmp/asd-dev.new && rm -f .asd-dev-upload && bash $d/tmp/asd-dev.new install$settings"
+    $remote = "mkdir -p $d/tmp && tr -d '\r' < .asd-dev-upload > $d/tmp/asd-dev.new && rm -f .asd-dev-upload && bash $d/tmp/asd-dev.new --from=windows install$settings"
     $r = Invoke-Native $Ssh @('-F', $tmpCfg, '-T', 'asd-dev-login', $remote)
     if ($r.Text -match 'ASD_DEV_NEWER_INSTALLED') {
         Fail 'your cluster home already has a newer asd-dev than this copy of wato_asd_tooling.' @(

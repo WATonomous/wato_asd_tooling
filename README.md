@@ -50,7 +50,10 @@ agent; run setup with `--no-agent-forwarding` if you do not want that.
 ./asd-dev start          # on Windows: .\asd-dev.cmd start
 ```
 
-This submits the session job with your defaults (4 CPUs, 16 GB RAM, 10 GiB of `/tmp`, no GPU,
+On your computer, run `./asd-dev` from the `wato_asd_tooling` folder (on Windows `.\asd-dev.cmd`);
+it is not on your PATH. Inside a session's terminal the same commands are just `asd-dev`.
+
+`start` submits the session job with your defaults (4 CPUs, 16 GB RAM, 10 GiB of `/tmp`, no GPU,
 6 hours), shows what it is waiting for if the cluster is busy, and opens VS Code in it once it
 runs (`--no-code` skips that). While it runs you can also connect yourself: in VS Code open the
 **Remote Explorer**, pick **SSH**, hover over **asd-dev-session** and click the arrow, or press
@@ -151,7 +154,7 @@ is in its log: View > Output, choose **Remote - SSH**, and look for lines starti
 | `Host key verification failed` | The session host key changed (for example `~/.asd-dev` was deleted). Run setup again. |
 | `Could not resolve hostname asd-dev-session...` | Your SSH config has no entry for that host. Run setup again, or `./asd-dev add NAME`. |
 | `Disk quota exceeded` in your home | VS Code keeps its server (about 1.3 GB per VS Code version) in `~/.vscode-server`, in your 20 GiB home. Delete old versions there. |
-| `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `asd-dev logs`. |
+| `Cannot connect to the Docker daemon` | Docker is still starting (restoring saved state can take minutes). See `./asd-dev logs`. |
 
 If a saved docker state cannot be restored because it is damaged, the session says so, starts
 docker empty and leaves the file alone. `./asd-dev start --reset-docker-state` (stop the running

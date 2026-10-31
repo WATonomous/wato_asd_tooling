@@ -54,6 +54,23 @@ RETIRED_KEYS=" auto_start auto_start_cooldown idle_timeout connect_wait "
 
 # ---------------------------------------------------------------- output helpers
 
+# Where the user reads our messages, so every command hint works there as printed: the laptop
+# wrappers pass --from=unix|windows; a session terminal has asd-dev on PATH; on a login node it
+# is not.
+FROM=""
+# shellcheck disable=SC2088 # printed for the user to type
+hint() { # hint "ARGS": the asd-dev command line for the reader
+    case $FROM in
+        unix) printf './asd-dev %s' "$1" ;;
+        windows) printf '.\\asd-dev.cmd %s' "$1" ;;
+        *) if [[ -n ${ASD_DEV_SESSION:-} ]]; then printf 'asd-dev %s' "$1"; else printf '~/%s/bin/asd-dev %s' "$INSTALL_ID" "$1"; fi ;;
+    esac
+}
+# For text read on the laptop without knowing its OS (VS Code's log, job notices about restarting).
+laptop_hint() { printf './asd-dev %s (Windows: .\\asd-dev.cmd %s) in your wato_asd_tooling folder' "$1" "$1"; }
+# For job notices in a session's terminal: how to start this session again, with extra options.
+restart_hint() { printf 'asd-dev stop here, then on your laptop: %s' "$(laptop_hint "$(with_name start "$SESSION_NAME")${1:+ $1}")"; }
+
 # All human-readable output goes to stderr: in "proxy" mode stdout is the ssh byte stream.
 say() { printf 'asd-dev: %s\n' "$*" >&2; }
 die() {
@@ -124,8 +141,9 @@ write_config_value() {
 
 create_default_config() {
     cat >"$CONFIG" <<'EOF'
-# asd-dev defaults for new sessions. Edit freely, or run: asd-dev config key=value
-# One-off overrides: asd-dev start --cpus 8 --vram 8192 ...
+# asd-dev defaults for new sessions. Edit this file, or change it from your laptop with
+#   ./asd-dev config key=value   (in your wato_asd_tooling folder; on Windows: .\asd-dev.cmd config key=value)
+# or with "asd-dev config key=value" in a session's terminal. One-off overrides: ./asd-dev start --cpus 8 ...
 cpus=4                # CPU cores
 mem=16G               # RAM
 time=6:00:00          # time limit (WATcloud asks interactive work to stay within 6 hours)
@@ -283,7 +301,7 @@ wait_ready() {
                     msg="job $J_ID is $why"
                     [[ $J_START != N/A && -n $J_START ]] && msg+=" (SLURM's estimated start: $J_START UTC)"
                 else
-                    die "job $J_ID cannot start: $why" "Stop it with: asd-dev stop --job $J_ID"
+                    die "job $J_ID cannot start: $why" "Stop it with: $(hint "stop --job $J_ID")"
                 fi
                 ;;
             RUNNING)
@@ -296,11 +314,11 @@ wait_ready() {
                 msg="job $J_ID is starting on $J_NODE"
                 if ((SECONDS - running_since > 90)); then
                     die "$msg after 90 seconds; the session did not come up." \
-                        "Its log: $LOGS/$J_ID.log (or: asd-dev logs). Then stop it with: asd-dev stop --job $J_ID"
+                        "Its log: $LOGS/$J_ID.log (or: $(hint logs)). Then stop it with: $(hint "stop --job $J_ID")"
                 fi
                 ;;
             GONE | COMPLETED | CANCELLED | FAILED | TIMEOUT | NODE_FAIL | PREEMPTED | OUT_OF_MEMORY | BOOT_FAIL | DEADLINE)
-                die "job $J_ID ended before it was ready ($J_STATE)." "Its log: $LOGS/$J_ID.log (or: asd-dev logs)"
+                die "job $J_ID ended before it was ready ($J_STATE)." "Its log: $LOGS/$J_ID.log (or: $(hint logs))"
                 ;;
             *) msg="job $J_ID is $J_STATE" ;;
         esac
@@ -320,12 +338,11 @@ cmd_proxy() {
     check_name "$name"
     if ! find_session_job "$name"; then
         # The first line must stand alone: VS Code shows only its log, and users skim it.
-        die "no session '$name' is running. Start one on your laptop: ./$(with_name "asd-dev start" "$name")" \
-            "(or on the login node: ~/$INSTALL_ID/bin/$(with_name "asd-dev start" "$name"))"
+        die "no session '$name' is running. Start one on your laptop: $(laptop_hint "$(with_name start "$name")")"
     fi
     if [[ $J_STATE == PENDING ]]; then
         die "session '$name' (job $J_ID) is still waiting to start: $(explain_reason "$J_REASON" || true)." \
-            "Connect once it runs; ./$(with_name "asd-dev start" "$name") on your laptop shows when."
+            "Connect once it runs; $(laptop_hint status) shows when."
     fi
     # A session that has just started may need a few seconds until its sshd listens.
     wait_ready $((SECONDS + 10)) ||
@@ -335,7 +352,7 @@ cmd_proxy() {
     # A quick failure means nothing answered; a late one is just the end of a connection.
     if ((rc != 0 && SECONDS - started < 5)); then
         die "could not reach the session's ssh server ($addr port $S_PORT on $S_NODE, job $J_ID)." \
-            "It restarts by itself if it crashed; retry in a few seconds. Its log: asd-dev logs $name"
+            "It restarts by itself if it crashed; retry in a few seconds. Its log: $(laptop_hint "$(with_name logs "$name")")"
     fi
     exit "$rc"
 }
@@ -365,7 +382,7 @@ parse_session_flags() {
             --job) FLAG_JOB=${2:?--job needs a job id}; shift ;;
             -f | --follow) FLAG_FOLLOW=yes ;;
             -h | --help) usage; exit 0 ;;
-            -*) die "unknown option '$1'" "Run: asd-dev help" ;;
+            -*) die "unknown option '$1'" "Run: $(hint help)" ;;
             *) NAME=$1 ;;
         esac
         shift
@@ -382,7 +399,7 @@ cmd_start() {
         [[ $J_STATE == RUNNING ]] && is_stopping "$J_ID" && what="stopping"
         die "session '$NAME' already exists (job $J_ID, $what${J_NODE:+ on $J_NODE})." \
             "Connect: VS Code > Remote Explorer > SSH > $(host_alias "$NAME")   (terminal: ssh $(host_alias "$NAME"))" \
-            "To start it again with other settings: $(with_name "asd-dev stop" "$NAME"), then start."
+            "To restart it with other settings: $(hint "$(with_name stop "$NAME")"), then start it."
     fi
     mkdir -p "$LOGS" "$SESSIONS"
     [[ -f $HOSTKEY ]] || die "the session host key $HOSTKEY is missing." "Run the setup script on your laptop again."
@@ -413,14 +430,14 @@ cmd_start() {
     J_ID=$(printf '%s\n' "$out" | grep -Eo '^[0-9]+' | tail -n1)
     [[ -n $J_ID ]] || die "could not read the job id from sbatch output:" "$out"
     say "submitted job $J_ID: $(describe_resources)"
-    trap 'say "stopped waiting; job $J_ID keeps going. Check it with: asd-dev status   cancel it with: $(with_name "asd-dev stop" "$NAME")"; exit 130' INT
+    trap 'say "stopped waiting; job $J_ID keeps going. Check it with: $(hint status)   cancel it with: $(hint "$(with_name stop "$NAME")")"; exit 130' INT
     wait_ready 0
     trap - INT
     refresh_job
     say "ready: connect VS Code to $(host_alias "$NAME") (job $J_ID on $J_NODE, $J_LEFT left; terminal: ssh $(host_alias "$NAME"))."
-    say "It ends at its time limit or with: $(with_name "asd-dev stop" "$NAME")"
+    say "It ends at its time limit or with: $(hint "$(with_name stop "$NAME")")"
     if [[ $NAME != default && -n ${SLURM_JOB_ID:-} ]]; then
-        say "VS Code lists $(host_alias "$NAME") once your laptop has its entry: run ./asd-dev add $NAME there."
+        say "VS Code lists $(host_alias "$NAME") once your laptop has its entry: $(laptop_hint "add $NAME")."
     fi
     printf 'ASD_DEV_READY %s %s\n' "$(host_alias "$NAME")" "$J_ID"
 }
@@ -486,7 +503,7 @@ cmd_status() {
     local lines line cpus mem gres
     lines=$(all_session_jobs)
     if [[ -z $lines ]]; then
-        say "no session is running. Start one: ./asd-dev start   (on the login node: ~/$INSTALL_ID/bin/asd-dev start)"
+        say "no session is running. Start one: $(hint start)"
         return 0
     fi
     printf '%-10s %-8s %-10s %-14s %-12s %s\n' SESSION JOB STATE NODE TIME_LEFT RESOURCES >&2
@@ -498,7 +515,7 @@ cmd_status() {
             "$J_STATE" "${J_NODE:-"-"}" "$J_LEFT" "$cpus" "$mem" "${gres#gres/}" >&2
         if [[ $J_STATE == PENDING ]]; then say "  job $J_ID is $(explain_reason "$J_REASON" || true)"; fi
     done <<<"$lines"
-    say "Connect: VS Code > Remote Explorer > SSH > asd-dev-session[-NAME]. Stop: asd-dev stop [NAME]"
+    say "Connect: VS Code > Remote Explorer > SSH > asd-dev-session[-NAME]. Stop: $(hint "stop [NAME]")"
 }
 
 cmd_logs() {
@@ -564,7 +581,7 @@ cmd_install() {
         chmod 600 "$HOSTKEY"
     fi
     find "$LOGS" -name '*.log' -mtime +14 -delete 2>/dev/null || true
-    say "session defaults: $(describe_resources); change them with: asd-dev config key=value"
+    say "session defaults: $(describe_resources); change them with: $(hint "config key=value")"
     printf 'ASD_DEV_INSTALLED %s %s %s\n' "$ASD_DEV_VERSION" "$(id -un)" "$(id -u)"
     printf 'ASD_DEV_HOSTKEY %s\n' "$(cut -d' ' -f1,2 "$HOSTKEY.pub")"
     if [[ ! -s /etc/cluster/users/$(id -u)/.ssh/authorized_keys && ! -s $HOME/.ssh/authorized_keys ]]; then
@@ -624,7 +641,7 @@ move_state_aside() { # move_state_aside WHY
 }
 
 load_docker_state() {
-    local file need avail again failures use
+    local file need avail failures use
     file=$(docker_state_file)
     [[ -f $file ]] || {
         log "[docker] no saved docker state for this session yet ($file)"
@@ -639,7 +656,6 @@ load_docker_state() {
         move_state_aside "you asked for --reset-docker-state"
         return 0
     fi
-    again="asd-dev stop, then $(with_name "asd-dev start" "$SESSION_NAME") "
     # Saves record their unpacked size next to the archive. The old scripts rewrite the default
     # archive without one, so a record older than the archive does not count.
     need=""
@@ -647,7 +663,7 @@ load_docker_state() {
     avail=$(df --output=avail -B1 /tmp | tail -n1 | tr -d ' ')
     if [[ $need =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]] && ((need + need / 10 > avail)); then
         saving_off "the saved docker state needs $(numfmt --to=iec "$need")B in /tmp, but this session has only $(numfmt --to=iec "$avail")B" \
-            "To restore it: ${again}--tmpdisk $((need * 12 / 10 / 1048576 + 4096))"
+            "To restore it: $(restart_hint "--tmpdisk $((need * 12 / 10 / 1048576 + 4096))")"
         return 0
     fi
     log "[docker] loading saved docker state ($(human_size "$file")) from $file ..."
@@ -660,7 +676,7 @@ load_docker_state() {
     rootlesskit rm -rf /tmp/docker || true
     if [[ $use =~ ^[0-9]+$ ]] && ((use >= 95)); then
         saving_off "restoring the saved docker state ran out of /tmp" \
-            "To restore it: ${again}--tmpdisk $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))"
+            "To restore it: $(restart_hint "--tmpdisk $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))")"
         return 0
     fi
     failures=$(($(cat "$file.failures" 2>/dev/null || echo 0) + 1))
@@ -670,7 +686,7 @@ load_docker_state() {
     fi
     (umask 077 && echo "$failures" >"$file.failures")
     saving_off "the saved docker state could not be restored; it looks damaged" \
-        "To discard it: ${again}--reset-docker-state (after one more failed restore it is moved aside by itself)."
+        "To discard it: $(restart_hint --reset-docker-state) (after one more failed restore it is moved aside by itself)."
 }
 
 start_docker() {
@@ -829,7 +845,7 @@ check_tmp_space() {
         TMP_WARNED=yes
         msg="asd-dev: /tmp of this session is ${use}% full ($(df -Ph /tmp | awk 'NR == 2 { print $3 " of " $2 }'));"
         msg+=" docker keeps its images there. Free space with 'docker system prune', or give the next session more:"
-        msg+=" asd-dev stop, then asd-dev start --tmpdisk 40960 (or for good: asd-dev config tmpdisk=40960)"
+        msg+=" asd-dev config tmpdisk=40960 here, then $(restart_hint)"
         log "$msg"
         notify_terminals "$msg"
     elif ((use < 80)); then
@@ -951,6 +967,8 @@ cmd_job() {
 usage() {
     cat >&2 <<EOF
 asd-dev $ASD_DEV_VERSION: VS Code dev sessions inside WATcloud SLURM jobs.
+On your laptop run this as ./asd-dev (or .\asd-dev.cmd) in your wato_asd_tooling folder; in a
+session's terminal as asd-dev; on a login node as ~/$INSTALL_ID/bin/asd-dev.
 
   asd-dev start [NAME] [options]   start a session and wait until VS Code can connect to it
   asd-dev stop [NAME] [--now]      stop a session (saves docker state first unless --now)
@@ -971,6 +989,9 @@ EOF
 }
 
 main() {
+    case ${1:-} in
+        --from=unix | --from=windows) FROM=${1#--from=}; shift ;;
+    esac
     local cmd=${1:-help}
     shift || true
     case $cmd in
