@@ -45,6 +45,8 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --no-windows       on WSL: do not also configure Windows (where VS Code runs)
   --no-agent-forwarding  do not forward your SSH agent into sessions (it is forwarded by default so
                      git over SSH works there; root on the compute node could use it meanwhile)
+  --add-session NAME only add the host asd-dev-session-NAME for a named session to the ssh config
+                     (./asd-dev add NAME and ./asd-dev start NAME call this)
   --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
                      independent install, e.g. to test another version)
   --yes              do not ask questions; use defaults and the values given
@@ -58,7 +60,7 @@ EOF
 
 # ---------------------------------------------------------------- arguments
 
-ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ARG_CLUSTER_DIR="" ARG_FORWARD="" ASSUME_YES=no DO_WINDOWS=yes
+ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ARG_CLUSTER_DIR="" ARG_FORWARD="" ARG_ADD="" ASSUME_YES=no DO_WINDOWS=yes
 CLUSTER_SETTINGS=()
 add_setting() {
     [[ $2 =~ ^[A-Za-z0-9_:.-]*$ ]] || fail "invalid value for --$1: '$2'"
@@ -71,6 +73,7 @@ while (($#)); do
         --login) ARG_LOGIN=${2:?--login needs a value}; shift ;;
         --ssh-config) ARG_CONFIG=${2:?--ssh-config needs a value}; shift ;;
         --cluster-dir) ARG_CLUSTER_DIR=${2:?--cluster-dir needs a value}; shift ;;
+        --add-session) ARG_ADD=$(printf '%s' "${2:?--add-session needs a name}" | tr '[:upper:]' '[:lower:]'); shift ;;
         --no-agent-forwarding) ARG_FORWARD=no ;;
         --agent-forwarding) ARG_FORWARD=yes ;;
         --no-windows) DO_WINDOWS=no ;;
@@ -169,6 +172,11 @@ CLUSTER_USER=""
 RC_NONE=""
 CLUSTER_DIR=.asd-dev
 FORWARD_AGENT=yes
+SESSION_NAMES=""
+
+# known_hosts name of the session host key: one per install, so installs sharing an ssh
+# directory do not replace each other's key.
+kh_alias() { if [[ $CLUSTER_DIR == .asd-dev ]]; then printf 'asd-dev-session'; else printf 'asd-dev-session@%s' "$CLUSTER_DIR"; fi; }
 
 # make_block IDENTITY KNOWN_HOSTS PROXY_CONFIG(empty = default config)
 make_block() {
@@ -192,16 +200,24 @@ Host asd-dev-login*
     ServerAliveInterval 15
     ServerAliveCountMax 4
 
-# %h is the name as typed (HostName %h keeps a "HostName" under "Host *" from applying);
-# Windows 10's OpenSSH 7.7 does not know the %n token. The quotes keep a crafted host name away from
-# the local shell on clients older than OpenSSH 9.6 (Windows passes them on; the login shell strips them).
-Host asd-dev-session asd-dev-session-*
-    HostName %h
+# One entry per session, each passing its own name as a fixed word: no host name that anyone
+# types (a git submodule URL, say) reaches a shell, on any client. Add a named session with
+# ./asd-dev add NAME (./asd-dev start NAME does it too).
+EOF
+    local n hosts="asd-dev-session"
+    for n in default $SESSION_NAMES; do
+        local alias=asd-dev-session
+        [[ $n == default ]] || alias="asd-dev-session-$n"
+        [[ $n == default ]] || hosts+=" $alias"
+        printf 'Host %s\n    ProxyCommand ssh%s -T asd-dev-login %s/bin/asd-dev proxy %s%s\n' \
+            "$alias" "$proxy_f" "$CLUSTER_DIR" "$alias" "$RC_NONE"
+    done
+    cat <<EOF
+Host $hosts
     User $CLUSTER_USER
     IdentityFile $identity
     IdentitiesOnly yes
-    ProxyCommand ssh$proxy_f -T asd-dev-login $CLUSTER_DIR/bin/asd-dev proxy '%h'$RC_NONE
-    HostKeyAlias asd-dev-session
+    HostKeyAlias $(kh_alias)
     UserKnownHostsFile $known
     StrictHostKeyChecking yes
     ForwardAgent $FORWARD_AGENT
@@ -276,9 +292,12 @@ write_known_hosts() {
     local file=$1 tmp
     mkdir -p "$(dirname "$file")"
     tmp=$(mktemp "${TMPDIR:-/tmp}/asd-dev-kh.XXXXXX")
-    [[ -f $file ]] && grep -v '^asd-dev-session ' "$file" >"$tmp" || true
-    printf 'asd-dev-session %s\n' "$HOSTKEY" >>"$tmp"
-    [[ -n $LEGACY_HOSTKEY ]] && printf 'asd-dev-session %s\n' "$LEGACY_HOSTKEY" >>"$tmp"
+    local alias
+    alias=$(kh_alias)
+    [[ -f $file ]] && grep -v "^$alias " "$file" >"$tmp" || true
+    printf '%s %s\n' "$alias" "$HOSTKEY" >>"$tmp"
+    # The old tooling's sessions use the default install's name.
+    [[ -n $LEGACY_HOSTKEY && $alias == asd-dev-session ]] && printf '%s %s\n' "$alias" "$LEGACY_HOSTKEY" >>"$tmp"
     cat "$tmp" >"$file"
     chmod 600 "$file" 2>/dev/null || true
     rm -f "$tmp"
@@ -314,6 +333,48 @@ previous_cluster_dir() { # the helper dir in our block's ProxyCommand
         }' "$1"
 }
 
+previous_sessions() { # names of the named sessions that have their own entry in our block
+    [[ -f $1 ]] || return 0
+    awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        { sub(/\r$/, "") }
+        $0 == b { inb = 1; next } $0 == e { inb = 0 }
+        inb && tolower($1) == "host" && NF == 2 && $2 ~ /^asd-dev-session-[a-z0-9][a-z0-9_-]*$/ {
+            sub(/^asd-dev-session-/, "", $2); printf "%s ", $2 }' "$1"
+}
+
+previous_proxy_config() { # the -F file in our block's ProxyCommand, if any
+    [[ -f $1 ]] || return 0
+    local line
+    line=$(awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        { sub(/\r$/, "") }
+        $0 == b { inb = 1; next } $0 == e { inb = 0 }
+        inb && tolower($1) == "proxycommand" { print; exit }' "$1")
+    if [[ $line =~ -F\ \"([^\"]*)\" ]]; then printf '%s' "${BASH_REMATCH[1]}"
+    elif [[ $line =~ -F\ ([^ ]+) ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi
+}
+
+# --add-session: rewrites the block of CONFIG with one more session, from the block's own values.
+add_session_to() { # add_session_to CONFIG NAME
+    local config=$1 name=$2 known proxy
+    grep -q "^$BLOCK_BEGIN" "$config" 2>/dev/null || return 1
+    CLUSTER_USER=$(previous_value "$config" user)
+    LOGIN_HOSTNAME=$(previous_value "$config" hostname)
+    CLUSTER_DIR=$(previous_cluster_dir "$config")
+    CLUSTER_DIR=${CLUSTER_DIR:-.asd-dev}
+    FORWARD_AGENT=$(previous_forward_agent "$config")
+    FORWARD_AGENT=${FORWARD_AGENT:-yes}
+    known=$(previous_value "$config" userknownhostsfile)
+    proxy=$(previous_proxy_config "$config")
+    RC_NONE=""
+    if awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '{ sub(/\r$/, "") } $0 == b { inb = 1 } $0 == e { inb = 0 }
+        inb && tolower($1) == "remotecommand" { f = 1 } END { exit !f }' "$config"; then
+        RC_NONE=$'\n    RemoteCommand none'
+    fi
+    SESSION_NAMES=$(previous_sessions "$config")
+    [[ " $SESSION_NAMES " == *" $name "* ]] || SESSION_NAMES+=" $name"
+    install_block "$config" "$(make_block "$(previous_value "$config" identityfile)" "$known" "$proxy")"
+}
+
 legacy_session_value() { # value of an export in the old session_config.sh, unless it is a placeholder
     local f="$REPO_DIR/session_config.sh" v
     [[ -f $f ]] || return 0
@@ -323,8 +384,31 @@ legacy_session_value() { # value of an export in the old session_config.sh, unle
 
 # ---------------------------------------------------------------- main
 
+add_session_main() {
+    local name=$ARG_ADD home config
+    [[ $name =~ ^[a-z0-9][a-z0-9_-]{0,19}$ && $name != default ]] ||
+        fail "invalid session name '$name'" "Use up to 20 lowercase letters, digits, '-' or '_'."
+    home=$(passwd_home)
+    [[ $ENV_KIND == gitbash ]] && home=$(windows_profile)
+    config=${ARG_CONFIG:-"$home/.ssh/config"}
+    add_session_to "$config" "$name" ||
+        fail "$config has no asd-dev entries yet; run ./setup.sh first."
+    if [[ $ENV_KIND == wsl && $DO_WINDOWS == yes ]]; then
+        local wp
+        wp=$(windows_profile)
+        if [[ -n $wp ]] && add_session_to "$wp/.ssh/config" "$name"; then
+            ok "  Windows: added asd-dev-session-$name too"
+        fi
+    fi
+    ok "VS Code now lists asd-dev-session-$name (Remote Explorer > SSH)."
+}
+
 main() {
     detect_env
+    if [[ -n $ARG_ADD ]]; then
+        add_session_main
+        return
+    fi
     [[ -f $HELPER ]] || fail "missing $HELPER; run setup.sh from a complete clone of wato_asd_tooling."
     command -v ssh >/dev/null || fail "ssh is not installed." "Install OpenSSH (e.g. 'sudo apt install openssh-client') and run setup again."
 
@@ -420,6 +504,8 @@ main() {
 
     FORWARD_AGENT=${ARG_FORWARD:-$(previous_forward_agent "$config")}
     [[ $FORWARD_AGENT == no ]] || FORWARD_AGENT=yes
+
+    SESSION_NAMES=$(previous_sessions "$config")
 
     # --- helper directory in the cluster home
     CLUSTER_DIR=${ARG_CLUSTER_DIR:-$(previous_cluster_dir "$config")}

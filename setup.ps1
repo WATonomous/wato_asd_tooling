@@ -49,6 +49,8 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --ssh-config FILE  ssh config file to write (default: %USERPROFILE%\.ssh\config, which VS Code reads)
   --no-agent-forwarding  do not forward your SSH agent into sessions (it is forwarded by default so
                      git over SSH works there; root on the compute node could use it meanwhile)
+  --add-session NAME only add the host asd-dev-session-NAME for a named session to the ssh config
+                     (.\asd-dev.cmd add NAME and .\asd-dev.cmd start NAME call this)
   --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
                      independent install, e.g. to test another version)
   --yes              do not ask questions; use defaults and the values given
@@ -62,7 +64,7 @@ Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the 
 
 # ---------------------------------------------------------------- arguments
 
-$ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $ArgClusterDir = ''; $ArgForward = ''; $AssumeYes = $false
+$ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $ArgClusterDir = ''; $ArgForward = ''; $ArgAdd = ''; $AssumeYes = $false
 $ClusterSettings = @()
 $settingNames = @('cpus', 'mem', 'time', 'tmpdisk', 'vram', 'gpus', 'gpu-type', 'idle-timeout', 'auto-start', 'docker-state')
 for ($i = 0; $i -lt $args.Count; $i++) {
@@ -86,6 +88,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         'login' { $ArgLogin = $value }
         'ssh-config' { $ArgConfig = $value }
         'cluster-dir' { $ArgClusterDir = $value }
+        'add-session' { $ArgAdd = $value.ToLowerInvariant() }
         default {
             if ($settingNames -notcontains $name) { Show-Usage; Fail "unknown option '$a'" }
             if ($value -notmatch '^[A-Za-z0-9_:.-]*$') { Fail "invalid value for ${a}: '$value'" }
@@ -148,17 +151,24 @@ function Make-Block([string]$identity, [string]$known, [string]$proxyConfig) {
         '    ServerAliveInterval 15',
         '    ServerAliveCountMax 4',
         '',
-        '# %h is the name as typed (HostName %h keeps a "HostName" under "Host *" from applying);',
-        "# Windows 10's OpenSSH 7.7 does not know the %n token. The quotes keep a crafted host name away from",
-        '# the local shell on clients older than OpenSSH 9.6 (Windows passes them on; the login shell strips them).',
-        'Host asd-dev-session asd-dev-session-*',
-        '    HostName %h',
+        '# One entry per session, each passing its own name as a fixed word: no host name that anyone',
+        '# types (a git submodule URL, say) reaches a shell, on any client. Add a named session with',
+        '# .\asd-dev.cmd add NAME (.\asd-dev.cmd start NAME does it too).'
+    )
+    $hosts = 'asd-dev-session'
+    foreach ($n in @('default') + @($script:SessionNames)) {
+        $alias = if ($n -eq 'default') { 'asd-dev-session' } else { "asd-dev-session-$n" }
+        if ($n -ne 'default') { $hosts += " $alias" }
+        $lines += "Host $alias"
+        $lines += "    ProxyCommand ssh$proxyF -T asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy $alias"
+        $lines += $script:RcNone
+    }
+    $lines += @(
+        "Host $hosts",
         "    User $script:ClusterUser",
         "    IdentityFile $id",
         '    IdentitiesOnly yes',
-        "    ProxyCommand ssh$proxyF -T asd-dev-login $($script:ClusterDir)/bin/asd-dev proxy '%h'",
-        $script:RcNone,
-        '    HostKeyAlias asd-dev-session',
+        "    HostKeyAlias $(Get-KhAlias)",
         "    UserKnownHostsFile $kh",
         '    StrictHostKeyChecking yes',
         "    ForwardAgent $($script:ForwardAgent)",
@@ -233,10 +243,16 @@ function Install-Block([string]$config, [string]$block) {
     Ok "  wrote the asd-dev entries at the top of $config"
 }
 
+# known_hosts name of the session host key: one per install, so installs sharing an ssh
+# directory do not replace each other's key.
+function Get-KhAlias { if ($script:ClusterDir -eq '.asd-dev') { 'asd-dev-session' } else { "asd-dev-session@$($script:ClusterDir)" } }
+
 function Write-KnownHosts([string]$file) {
-    $keep = @(Read-Lines $file | Where-Object { $_ -and ($_ -notmatch '^asd-dev-session ') })
-    $keep += "asd-dev-session $script:HostKey"
-    if ($script:LegacyHostKey) { $keep += "asd-dev-session $script:LegacyHostKey" }
+    $alias = Get-KhAlias
+    $keep = @(Read-Lines $file | Where-Object { $_ -and -not $_.StartsWith("$alias ") })
+    $keep += "$alias $script:HostKey"
+    # The old tooling's sessions use the default install's name.
+    if ($script:LegacyHostKey -and $alias -eq 'asd-dev-session') { $keep += "$alias $script:LegacyHostKey" }
     [System.IO.File]::WriteAllText($file, (($keep -join "`n") + "`n"), $Utf8NoBom)
 }
 
@@ -246,6 +262,35 @@ function Previous-ClusterDir([string]$config) {
         if ($l -eq $BlockBegin) { $inBlock = $true; continue }
         if ($l -eq $BlockEnd) { break }
         if ($inBlock -and $l -match '^\s*ProxyCommand\s.*\s(\S+)/bin/asd-dev\s') { return $Matches[1] }
+    }
+    return ''
+}
+
+function Previous-Sessions([string]$config) {
+    $names = @(); $inBlock = $false
+    foreach ($l in @(Read-Lines $config)) {
+        if ($l -eq $BlockBegin) { $inBlock = $true; continue }
+        if ($l -eq $BlockEnd) { break }
+        if ($inBlock -and $l -match '^\s*Host\s+asd-dev-session-([a-z0-9][a-z0-9_-]*)\s*$') { $names += $Matches[1] }
+    }
+    return $names
+}
+function Previous-BlockLine([string]$config, [string]$pattern) {
+    $inBlock = $false
+    foreach ($l in @(Read-Lines $config)) {
+        if ($l -eq $BlockBegin) { $inBlock = $true; continue }
+        if ($l -eq $BlockEnd) { break }
+        if ($inBlock -and $l -match $pattern) { return $l }
+    }
+    return ''
+}
+function Previous-ForwardAgent([string]$config) {
+    $inBlock = $false; $inSession = $false
+    foreach ($l in @(Read-Lines $config)) {
+        if ($l -eq $BlockBegin) { $inBlock = $true; continue }
+        if ($l -eq $BlockEnd) { break }
+        if ($inBlock -and $l -match '^\s*Host\s') { $inSession = ($l -match '^\s*Host\s+asd-dev-session(\s|$)') }
+        if ($inBlock -and $inSession -and $l -match '^\s*ForwardAgent\s+(\S+)') { return $Matches[1].ToLowerInvariant() }
     }
     return ''
 }
@@ -293,6 +338,30 @@ if ($ArgConfig) {
 }
 $Known = Join-Path $SshDir 'asd-dev_known_hosts'
 if (-not (Test-Path -LiteralPath $SshDir)) { New-Item -ItemType Directory -Path $SshDir | Out-Null }
+
+$script:SessionNames = @(Previous-Sessions $Config)
+
+# --add-session: rewrite the block with one more session, from the block's own values.
+if ($ArgAdd) {
+    if ($ArgAdd -cnotmatch '^[a-z0-9][a-z0-9_-]{0,19}$' -or $ArgAdd -eq 'default') {
+        Fail "invalid session name '$ArgAdd'" @("Use up to 20 lowercase letters, digits, '-' or '_'.")
+    }
+    $script:ClusterUser = Previous-Value $Config 'User'
+    if (-not $script:ClusterUser) { Fail "$Config has no asd-dev entries yet; run setup.cmd first." }
+    $script:LoginHostName = Previous-Value $Config 'HostName'
+    $script:ClusterDir = Previous-ClusterDir $Config
+    if (-not $script:ClusterDir) { $script:ClusterDir = '.asd-dev' }
+    $script:ForwardAgent = Previous-ForwardAgent $Config
+    if (-not $script:ForwardAgent) { $script:ForwardAgent = 'yes' }
+    if (Previous-BlockLine $Config '^\s*RemoteCommand\s+none') { $script:RcNone = '    RemoteCommand none' }
+    $pc = Previous-BlockLine $Config '^\s*ProxyCommand\s'
+    $prevProxy = ''
+    if ($pc -match '-F\s+"([^"]+)"') { $prevProxy = $Matches[1] } elseif ($pc -match '-F\s+(\S+)') { $prevProxy = $Matches[1] }
+    if ($script:SessionNames -notcontains $ArgAdd) { $script:SessionNames += $ArgAdd }
+    Install-Block $Config (Make-Block (Previous-Value $Config 'IdentityFile') (Previous-Value $Config 'UserKnownHostsFile') $prevProxy)
+    Ok "VS Code now lists asd-dev-session-$ArgAdd (Remote Explorer > SSH)."
+    exit 0
+}
 
 Write-Host 'wato_asd_tooling setup: VS Code dev sessions in WATcloud SLURM jobs'
 Info "This computer: Windows, $sshVersion ($Ssh). ssh config to write: $Config"

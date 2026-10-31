@@ -18,6 +18,7 @@ Usage: .\asd-dev.cmd COMMAND [args]
                           options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
                           --gpu-type TYPE --tmpdisk MiB --idle-timeout MIN; --no-code; --folder PATH
   code [NAME] [--folder PATH]  open VS Code in a session (connecting starts one if needed)
+  add NAME                add the host asd-dev-session-NAME for a named session (start does it too)
   stop [NAME] [--now]     stop a session (--all: every session)
   status                  list your sessions
   logs [NAME] [-f]        show a session's log
@@ -51,6 +52,20 @@ function Invoke-Remote([string[]]$words) {
     }
 }
 
+# A named session needs its own host entry before ssh or VS Code can reach it.
+function Ensure-Host([string]$name) {
+    if (-not $name -or $name -eq 'default') { return }
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $pc = & ssh.exe @SshArgs -T -G "asd-dev-session-$name" 2>$null | Where-Object { $_ -match '^proxycommand ' } }
+    finally { $ErrorActionPreference = $old }
+    if (-not $pc) {
+        $setupArgs = @('--add-session', $name)
+        if ($env:ASD_DEV_SSH_CONFIG) { $setupArgs += @('--ssh-config', $env:ASD_DEV_SSH_CONFIG) }
+        & (Join-Path $RepoDir 'setup.ps1') @setupArgs
+    }
+}
+
 function Get-Alias([string]$name) { if (-not $name -or $name -eq 'default') { 'asd-dev-session' } else { "asd-dev-session-$name" } }
 
 function Open-Code([string]$alias, [string]$folder) {
@@ -76,12 +91,17 @@ if ($args.Count -gt 1) { $rest = @($args[1..($args.Count - 1)] | ForEach-Object 
 
 switch ($cmd) {
     'start' {
-        $words = @('start'); $noCode = $false; $folder = ''
+        $words = @('start'); $noCode = $false; $folder = ''; $name = ''
+        $valued = @('--cpus', '--mem', '--time', '--tmpdisk', '--vram', '--gpus', '--gpu-type', '--partition', '--idle-timeout')
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
             elseif ($rest[$i] -eq '--folder') { $folder = $rest[++$i] }
-            else { $words += $rest[$i] }
+            elseif ($valued -contains $rest[$i]) { $words += $rest[$i]; $words += $rest[++$i] }
+            elseif ($rest[$i] -eq '--name' -or $rest[$i] -eq '-n') { $words += $rest[$i]; $name = $rest[++$i]; $words += $name }
+            elseif ($rest[$i].StartsWith('-')) { $words += $rest[$i] }
+            else { if (-not $name) { $name = $rest[$i] }; $words += $rest[$i] }
         }
+        Ensure-Host $name.ToLowerInvariant()
         # stdout carries only the "ASD_DEV_READY <alias> <job>" line; messages go to stderr (the console).
         $out = @(Invoke-Remote $words)
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -94,17 +114,23 @@ switch ($cmd) {
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq '--folder') { $folder = $rest[++$i] } else { $name = $rest[$i] }
         }
+        Ensure-Host $name
         Open-Code (Get-Alias $name) $folder
     }
     { $_ -in @('ssh', 'shell') } {
         $name = ''
         if ($rest.Count -gt 1 -and ($rest[0] -eq '--name' -or $rest[0] -eq '-n')) { $name = $rest[1]; $rest = @($rest | Select-Object -Skip 2) }
+        Ensure-Host $name
         & ssh.exe @SshArgs (Get-Alias $name) @rest
         exit $LASTEXITCODE
     }
     { $_ -in @('stop', 'status', 'logs', 'log', 'config', 'version') } {
         Invoke-Remote (@($cmd) + $rest)
         exit $LASTEXITCODE
+    }
+    'add' {
+        if ($rest.Count -lt 1) { Show-Usage; exit 1 }
+        Ensure-Host $rest[0].ToLowerInvariant()
     }
     'setup' {
         & (Join-Path $RepoDir 'setup.ps1') @rest

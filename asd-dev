@@ -16,6 +16,7 @@ Usage: ./asd-dev COMMAND [args]
                           options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
                           --gpu-type TYPE --tmpdisk MiB --idle-timeout MIN; --no-code; --folder PATH
   code [NAME] [--folder PATH]  open VS Code in a session (connecting starts one if needed)
+  add NAME                add the host asd-dev-session-NAME for a named session (start does it too)
   stop [NAME] [--now]     stop a session (--all: every session)
   status                  list your sessions
   logs [NAME] [-f]        show a session's log
@@ -69,16 +70,31 @@ open_code() { # open_code HOST_ALIAS FOLDER
     fi
 }
 
+# A named session needs its own host entry before ssh or VS Code can reach it.
+ensure_host() { # ensure_host NAME
+    [[ -n $1 && $1 != default ]] || return 0
+    if ! ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "asd-dev-session-$1" 2>/dev/null </dev/null | grep -q '^proxycommand '; then
+        local cfg=()
+        [[ -n ${ASD_DEV_SSH_CONFIG:-} ]] && cfg=(--ssh-config "$ASD_DEV_SSH_CONFIG")
+        "$REPO_DIR/setup.sh" --add-session "$1" ${cfg[@]+"${cfg[@]}"} >&2
+    fi
+}
+
 cmd_start() {
-    local args=() no_code=no folder="" out alias
+    local args=() no_code=no folder="" out alias name=""
     while (($#)); do
         case $1 in
             --no-code) no_code=yes ;;
             --folder) folder=${2:?--folder needs a path}; shift ;;
-            *) args+=("$1") ;;
+            --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --partition | --idle-timeout)
+                args+=("$1" "${2:?$1 needs a value}"); shift ;;
+            --name | -n) name=${2:?--name needs a value}; args+=("$1" "$2"); shift ;;
+            -*) args+=("$1") ;;
+            *) [[ -z $name ]] && name=$1; args+=("$1") ;;
         esac
         shift
     done
+    ensure_host "$name"
     out=$(remote start ${args[@]+"${args[@]}"}) || exit $?
     alias=$(printf '%s\n' "$out" | awk '$1 == "ASD_DEV_READY" { print $2 }' | tail -n1)
     [[ -n $alias ]] || exit 1
@@ -95,12 +111,14 @@ cmd_code() {
         esac
         shift
     done
+    ensure_host "$name"
     open_code "$(alias_for "$name")" "$folder"
 }
 
 cmd_ssh() {
     local name=""
     if [[ ${1:-} == --name || ${1:-} == -n ]]; then name=${2:?--name needs a value}; shift 2; fi
+    ensure_host "$name"
     exec ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$(alias_for "$name")" "$@"
 }
 
@@ -111,6 +129,7 @@ main() {
         start) cmd_start "$@" ;;
         code | open) cmd_code "$@" ;;
         ssh | shell) cmd_ssh "$@" ;;
+        add) [[ -n ${1:-} ]] || { usage >&2; exit 1; }; ensure_host "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" ;;
         stop | status | logs | log | config | version) remote "$cmd" "$@" ;;
         setup) exec "$REPO_DIR/setup.sh" "$@" ;;
         help | -h | --help) usage ;;
