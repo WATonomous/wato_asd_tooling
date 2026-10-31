@@ -82,6 +82,11 @@ function Stop-Unexpected([string]$word) {
     exit 1
 }
 
+function Get-Value([string[]]$list, [int]$i) { # the value after option $list[$i]
+    if ($i + 1 -ge $list.Count) { [Console]::Error.WriteLine("asd-dev: ERROR: $($list[$i]) needs a value"); exit 1 }
+    return $list[$i + 1]
+}
+
 function Get-Alias([string]$name) { if (-not $name -or $name -eq 'default') { 'asd-dev-session' } else { "asd-dev-session-$name" } }
 
 function Open-Code([string]$alias, [string]$folder) {
@@ -111,12 +116,9 @@ switch ($cmd) {
         $valued = @('--cpus', '--mem', '--time', '--tmpdisk', '--vram', '--gpus', '--gpu-type', '--partition')
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
-            elseif ($rest[$i] -eq '--folder') { $folder = $rest[++$i] }
-            elseif ($valued -contains $rest[$i]) { $words += $rest[$i]; $words += $rest[++$i] }
-            elseif ($rest[$i] -eq '--name') {
-                if ($i + 1 -ge $rest.Count) { Write-Host 'asd-dev: --name needs a session name'; exit 1 }
-                $words += $rest[$i]; $name = $rest[++$i]; $words += $name
-            }
+            elseif ($rest[$i] -eq '--folder') { $folder = Get-Value $rest $i; $i++ }
+            elseif ($valued -contains $rest[$i]) { $words += $rest[$i]; $words += (Get-Value $rest $i); $i++ }
+            elseif ($rest[$i] -eq '--name') { $name = Get-Value $rest $i; $words += $rest[$i]; $words += $name; $i++ }
             elseif ($rest[$i].StartsWith('-')) { $words += $rest[$i] }
             else { Stop-Unexpected $rest[$i] }
         }
@@ -131,8 +133,8 @@ switch ($cmd) {
     { $_ -in @('code', 'open') } {
         $name = ''; $folder = ''
         for ($i = 0; $i -lt $rest.Count; $i++) {
-            if ($rest[$i] -eq '--folder') { $folder = $rest[++$i] }
-            elseif ($rest[$i] -eq '--name') { $name = $rest[++$i] }
+            if ($rest[$i] -eq '--folder') { $folder = Get-Value $rest $i; $i++ }
+            elseif ($rest[$i] -eq '--name') { $name = Get-Value $rest $i; $i++ }
             elseif ($rest[$i].StartsWith('-')) { Write-Host "unknown option $($rest[$i])"; exit 1 }
             else { Stop-Unexpected $rest[$i] }
         }
@@ -141,7 +143,7 @@ switch ($cmd) {
     }
     { $_ -in @('ssh', 'shell') } {
         $name = ''
-        if ($rest.Count -gt 1 -and $rest[0] -eq '--name') { $name = $rest[1]; $rest = @($rest | Select-Object -Skip 2) }
+        if ($rest.Count -ge 1 -and $rest[0] -eq '--name') { $name = Get-Value $rest 0; $rest = @($rest | Select-Object -Skip 2) }
         Ensure-Host $name
         & ssh.exe @SshArgs (Get-Alias $name) @rest
         exit $LASTEXITCODE
@@ -151,7 +153,7 @@ switch ($cmd) {
         exit $LASTEXITCODE
     }
     'add' {
-        if ($rest.Count -ge 2 -and $rest[0] -eq '--name') { Ensure-Host $rest[1].ToLowerInvariant() }
+        if ($rest.Count -ge 1 -and $rest[0] -eq '--name') { Ensure-Host (Get-Value $rest 0).ToLowerInvariant() }
         elseif ($rest.Count -ge 1 -and -not $rest[0].StartsWith('-')) { Stop-Unexpected $rest[0] }
         else { Show-Usage; exit 1 }
     }

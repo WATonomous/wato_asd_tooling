@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.1.0-rc.3
+ASD_DEV_VERSION=2.1.0-rc.4
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=19
+ASD_DEV_SERIAL=20
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -61,6 +61,7 @@ FROM=""
 # shellcheck disable=SC2088 # printed for the user to type
 hint() { # hint "ARGS": the asd-dev command line for the reader
     case $FROM in
+        laptop) laptop_hint "$1" ;;
         unix) printf './asd-dev %s' "$1" ;;
         windows) printf '.\\asd-dev.cmd %s' "$1" ;;
         *) if [[ -n ${ASD_DEV_SESSION:-} ]]; then printf 'asd-dev %s' "$1"; else printf '~/%s/bin/asd-dev %s' "$INSTALL_ID" "$1"; fi ;;
@@ -102,7 +103,10 @@ apply_settings() {
         [[ $kv == *=* ]] || die "$origin: expected key=value, got '$kv'"
         key=${kv%%=*}
         value=${kv#*=}
-        [[ $RETIRED_KEYS == *" $key "* ]] && continue
+        if [[ $RETIRED_KEYS == *" $key "* ]]; then
+            [[ $origin == "$CONFIG" ]] && continue
+            die "$origin: '$key' is no longer used: sessions start only with start and end at their time limit or with stop."
+        fi
         [[ -v CFG[$key] ]] || die "$origin: unknown setting '$key'" "Known settings: ${CFG_KEYS[*]}"
         valid_value "$key" "$value" || die "$origin: invalid value for $key: '$value'" \
             "Examples: cpus=8 mem=32G time=6:00:00 tmpdisk=40960 vram=8192 gpus=1 gpu_type=rtx_3090 docker_state=no"
@@ -139,11 +143,17 @@ write_config_value() {
     mv -f "$tmp" "$CONFIG"
 }
 
-create_default_config() {
-    cat >"$CONFIG" <<'EOF'
+config_header() {
+    cat <<'EOF'
 # asd-dev defaults for new sessions. Edit this file, or change it from your laptop with
 #   ./asd-dev config key=value   (in your wato_asd_tooling folder; on Windows: .\asd-dev.cmd config key=value)
 # or with "asd-dev config key=value" in a session's terminal. One-off overrides: ./asd-dev start --cpus 8 ...
+EOF
+}
+
+create_default_config() {
+    config_header >"$CONFIG"
+    cat >>"$CONFIG" <<'EOF'
 cpus=4                # CPU cores
 mem=16G               # RAM
 time=6:00:00          # time limit (WATcloud asks interactive work to stay within 6 hours)
@@ -154,6 +164,23 @@ gpu_type=             # e.g. rtx_3090; empty = any
 partition=            # empty = cluster default
 docker_state=yes      # restore docker images/containers at start, save them when the session ends
 EOF
+}
+
+# Drops retired settings (with their comment continuation lines) and the old header from a config
+# written by an earlier version, since their comments describe behaviour that is gone.
+upgrade_config() {
+    local tmp
+    tmp=$(mktemp "$CONFIG.XXXXXX")
+    {
+        grep -qxF "$(config_header | head -n1)" "$CONFIG" || config_header
+        awk -v retired="$RETIRED_KEYS" '
+            /^# asd-dev defaults for new sessions\. Edit freely/ || /^# One-off overrides: asd-dev start/ { next }
+            { key = $0; sub(/^[[:space:]]*/, "", key); sub(/[[:space:]]*=.*/, "", key) }
+            /^[[:space:]]*[a-z_]+[[:space:]]*=/ && index(retired, " " key " ") { dropped = 1; next }
+            dropped && /^[[:space:]]+#/ { next }
+            { dropped = 0; print }' "$CONFIG"
+    } >"$tmp"
+    if cmp -s "$tmp" "$CONFIG"; then rm -f "$tmp"; else mv -f "$tmp" "$CONFIG"; fi
 }
 
 describe_resources() {
@@ -229,12 +256,29 @@ parse_job() {
     IFS='|' read -r J_ID J_STATE J_NODE J_REASON _ J_LEFT J_START J_NAME _ <<<"$1"
 }
 
-# Puts session $1's job into J_*; returns 1 if there is none.
+# Puts session $1's oldest job into J_* and the ids of any newer ones into J_OTHERS; returns 1
+# if there is none.
 find_session_job() {
     local jobs
     jobs=$(session_jobs "$1") || exit 1
     [[ -n $jobs ]] || return 1
+    J_OTHERS=$(printf '%s\n' "$jobs" | tail -n +2 | cut -d'|' -f1 | paste -sd' ' -)
     parse_job "$(printf '%s\n' "$jobs" | head -n1)"
+}
+
+# Removes per-job files of jobs that are no longer active (left behind by hard kills).
+cleanup_stale() {
+    local jobs active f id
+    # Without an answer from SLURM nothing is known to be stale.
+    jobs=$(timeout 15 squeue --me -h -o "$SQ_FORMAT" 2>/dev/null </dev/null) || return 0
+    active=" $(printf '%s\n' "$jobs" | own_jobs_filter | cut -d'|' -f1 | paste -sd' ' -) "
+    for f in "$SESSIONS"/*.env "$SESSIONS"/*.stop "$SESSIONS"/*.stopping; do
+        [[ -e $f ]] || continue
+        id=${f##*/}
+        id=${id%%.*}
+        [[ $id =~ ^[0-9]+$ && $active != *" $id "* ]] && rm -f "$f"
+    done
+    return 0
 }
 
 refresh_job() {
@@ -307,18 +351,19 @@ wait_ready() {
             RUNNING)
                 running_since=${running_since:-$SECONDS}
                 if is_stopping "$J_ID"; then
-                    die "job $J_ID is stopping (it saves docker state first if that is on)."
+                    die "job $J_ID is stopping (saving docker state first if that is on)." \
+                        "Start it again once $(hint status) no longer lists it."
                 fi
                 # The job writes its state file only once sshd listens, so no probe is needed.
                 read_state "$J_ID" && return 0
                 msg="job $J_ID is starting on $J_NODE"
                 if ((SECONDS - running_since > 90)); then
                     die "$msg after 90 seconds; the session did not come up." \
-                        "Its log: $LOGS/$J_ID.log (or: $(hint logs)). Then stop it with: $(hint "stop --job $J_ID")"
+                        "Its log: $(hint "logs --job $J_ID"). Then stop it with: $(hint "stop --job $J_ID")"
                 fi
                 ;;
             GONE | COMPLETED | CANCELLED | FAILED | TIMEOUT | NODE_FAIL | PREEMPTED | OUT_OF_MEMORY | BOOT_FAIL | DEADLINE)
-                die "job $J_ID ended before it was ready ($J_STATE)." "Its log: $LOGS/$J_ID.log (or: $(hint logs))"
+                die "job $J_ID ended before it was ready ($J_STATE)." "Its log: $(hint "logs --job $J_ID")"
                 ;;
             *) msg="job $J_ID is $J_STATE" ;;
         esac
@@ -334,12 +379,16 @@ wait_ready() {
 # ProxyCommand target: connects to a running session; it never starts one.
 cmd_proxy() {
     local name
+    # What this prints lands in VS Code's log on the laptop.
+    FROM=laptop
     name=$(session_from_alias "${1:-asd-dev-session}")
     check_name "$name"
     if ! find_session_job "$name"; then
         # The first line must stand alone: VS Code shows only its log, and users skim it.
         die "no session '$name' is running. Start one on your laptop: $(laptop_hint "$(with_name start "$name")")"
     fi
+    [[ -z $J_OTHERS ]] || say "WARNING: session '$name' has more than one job; using the oldest ($J_ID)." \
+        "Stop the others ($J_OTHERS) with: $(hint "stop --job ID")"
     if [[ $J_STATE == PENDING ]]; then
         die "session '$name' (job $J_ID) is still waiting to start: $(explain_reason "$J_REASON" || true)." \
             "Connect once it runs; $(laptop_hint status) shows when."
@@ -364,22 +413,26 @@ parse_session_flags() {
     FLAG_FOLLOW=no RESET_DOCKER_STATE=no
     while (($#)); do
         case $1 in
-            --name) NAME=${2:?--name needs a value} NAME_GIVEN=yes; shift ;;
-            --cpus) FLAG_SETTINGS+=("cpus=${2:?$1 needs a value}"); shift ;;
-            --mem) FLAG_SETTINGS+=("mem=${2:?$1 needs a value}"); shift ;;
-            --time) FLAG_SETTINGS+=("time=${2:?$1 needs a value}"); shift ;;
-            --tmpdisk) FLAG_SETTINGS+=("tmpdisk=${2:?$1 needs a value}"); shift ;;
-            --vram) FLAG_SETTINGS+=("vram=${2:?$1 needs a value}" "gpus=0"); shift ;;
-            --gpus) FLAG_SETTINGS+=("gpus=${2:?$1 needs a value}"); shift ;;
-            --gpu-type) FLAG_SETTINGS+=("gpu_type=${2:?$1 needs a value}"); shift ;;
+            --name | --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --partition | --job)
+                (($# >= 2)) || die "$1 needs a value" ;;
+        esac
+        case $1 in
+            --name) NAME=$2 NAME_GIVEN=yes; shift ;;
+            --cpus) FLAG_SETTINGS+=("cpus=$2"); shift ;;
+            --mem) FLAG_SETTINGS+=("mem=$2"); shift ;;
+            --time) FLAG_SETTINGS+=("time=$2"); shift ;;
+            --tmpdisk) FLAG_SETTINGS+=("tmpdisk=$2"); shift ;;
+            --vram) FLAG_SETTINGS+=("vram=$2" "gpus=0"); shift ;;
+            --gpus) FLAG_SETTINGS+=("gpus=$2"); shift ;;
+            --gpu-type) FLAG_SETTINGS+=("gpu_type=$2"); shift ;;
             --no-gpu) FLAG_SETTINGS+=("gpus=0" "vram=0") ;;
-            --partition) FLAG_SETTINGS+=("partition=${2:?$1 needs a value}"); shift ;;
+            --partition) FLAG_SETTINGS+=("partition=$2"); shift ;;
             --docker-state) FLAG_SETTINGS+=("docker_state=yes") ;;
             --no-docker-state) FLAG_SETTINGS+=("docker_state=no") ;;
             --reset-docker-state) RESET_DOCKER_STATE=yes ;;
             --now) FLAG_NOW=yes ;;
             --all) FLAG_ALL=yes ;;
-            --job) FLAG_JOB=${2:?--job needs a job id}; shift ;;
+            --job) FLAG_JOB=$2; shift ;;
             -f | --follow) FLAG_FOLLOW=yes ;;
             -h | --help) usage; exit 0 ;;
             -*) die "unknown option '$1'" "Run: $(hint help)" ;;
@@ -390,17 +443,22 @@ parse_session_flags() {
     check_name "$NAME"
 }
 
+refuse_existing() { # dies for the session job in J_*
+    if [[ $J_STATE == RUNNING ]] && is_stopping "$J_ID"; then
+        die "session '$NAME' (job $J_ID) is stopping (saving docker state first if that is on)." \
+            "Start it again once $(hint status) no longer lists it."
+    fi
+    local connect=()
+    [[ $J_STATE == RUNNING ]] && connect=("Connect: VS Code > Remote Explorer > SSH > $(host_alias "$NAME")   (terminal: ssh $(host_alias "$NAME"))")
+    die "session '$NAME' already exists (job $J_ID, $J_STATE${J_NODE:+ on $J_NODE})." ${connect[@]+"${connect[@]}"} \
+        "To restart it with other settings: $(hint "$(with_name stop "$NAME")"), then start it."
+}
+
 cmd_start() {
     parse_session_flags "$@"
     load_config
     if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
-    if find_session_job "$NAME"; then
-        local what=$J_STATE
-        [[ $J_STATE == RUNNING ]] && is_stopping "$J_ID" && what="stopping"
-        die "session '$NAME' already exists (job $J_ID, $what${J_NODE:+ on $J_NODE})." \
-            "Connect: VS Code > Remote Explorer > SSH > $(host_alias "$NAME")   (terminal: ssh $(host_alias "$NAME"))" \
-            "To restart it with other settings: $(hint "$(with_name stop "$NAME")"), then start it."
-    fi
+    if find_session_job "$NAME"; then refuse_existing; fi
     mkdir -p "$LOGS" "$SESSIONS"
     [[ -f $HOSTKEY ]] || die "the session host key $HOSTKEY is missing." "Run the setup script on your laptop again."
     # shellcheck disable=SC2054 # the comma belongs to --export's value
@@ -427,8 +485,16 @@ cmd_start() {
         "docker_state=${CFG[docker_state]}" "reset_docker_state=$RESET_DOCKER_STATE" 2>&1 </dev/null); then
         die "SLURM rejected the session job:" "$out" "Requested: $(describe_resources)"
     fi
-    J_ID=$(printf '%s\n' "$out" | grep -Eo '^[0-9]+' | tail -n1)
-    [[ -n $J_ID ]] || die "could not read the job id from sbatch output:" "$out"
+    local new
+    new=$(printf '%s\n' "$out" | grep -Eo '^[0-9]+' | tail -n1)
+    [[ -n $new ]] || die "could not read the job id from sbatch output:" "$out"
+    # Two starts at once both pass the check above; the newer job gives way.
+    if find_session_job "$NAME" && [[ $J_ID != "$new" ]]; then
+        scancel "$new" </dev/null || true
+        say "another start of '$NAME' got there first; cancelled the new job $new."
+        refuse_existing
+    fi
+    J_ID=$new
     say "submitted job $J_ID: $(describe_resources)"
     trap 'say "stopped waiting; job $J_ID keeps going. Check it with: $(hint status)   cancel it with: $(hint "$(with_name stop "$NAME")")"; exit 130' INT
     wait_ready 0
@@ -501,7 +567,8 @@ cmd_stop() {
 
 cmd_status() {
     parse_session_flags "$@"
-    local lines line cpus mem gres
+    local lines line cpus mem gres name seen=" "
+    cleanup_stale
     lines=$(all_session_jobs)
     if [[ $NAME_GIVEN == yes ]]; then lines=$(printf '%s\n' "$lines" | awk -F'|' -v j="$(job_name "$NAME")" '$8 == j'); fi
     if [[ -z $lines ]]; then
@@ -517,11 +584,28 @@ cmd_status() {
         parse_job "$line"
         IFS='|' read -r cpus mem gres <<<"$(printf '%s' "$line" | cut -d'|' -f9-11)"
         [[ $J_STATE == RUNNING ]] && is_stopping "$J_ID" && J_STATE=STOPPING
-        printf '%-10s %-8s %-10s %-14s %-12s %s CPUs, %s RAM, %s\n' "$(name_from_job_name "$J_NAME")" "$J_ID" \
+        name=$(name_from_job_name "$J_NAME")
+        printf '%-10s %-8s %-10s %-14s %-12s %s CPUs, %s RAM, %s\n' "$name" "$J_ID" \
             "$J_STATE" "${J_NODE:-"-"}" "$J_LEFT" "$cpus" "$mem" "${gres#gres/}" >&2
         if [[ $J_STATE == PENDING ]]; then say "  job $J_ID is $(explain_reason "$J_REASON" || true)"; fi
+        if [[ $seen == *" $name "* ]]; then
+            say "  WARNING: job $J_ID is a second '$name' session, which connections do not use; stop it with: $(hint "stop --job $J_ID")"
+        fi
+        seen+="$name "
     done <<<"$lines"
     say "Connect: VS Code > Remote Explorer > SSH > asd-dev-session[-NAME]. Stop: $(hint "stop [--name NAME]")"
+}
+
+# Prints the job id of session $1's newest log; each log's first line names its session.
+newest_log() {
+    local f
+    # shellcheck disable=SC2012 # our own file names, newest first
+    ls -t "$LOGS" 2>/dev/null | while IFS= read -r f; do
+        if head -n 3 "$LOGS/$f" | grep -qF "session '$1', job"; then
+            printf '%s' "${f%.log}"
+            break
+        fi
+    done || true
 }
 
 cmd_logs() {
@@ -531,8 +615,7 @@ cmd_logs() {
         if find_session_job "$NAME"; then
             id=$J_ID
         else
-            # shellcheck disable=SC2012 # our own file names, newest first
-            id=$(ls -t "$LOGS" 2>/dev/null | head -n1 | sed 's/\.log$//' || true)
+            id=$(newest_log "$NAME")
         fi
     fi
     [[ -n $id && -f $LOGS/$id.log ]] || die "no log found${id:+ for job $id}."
@@ -575,7 +658,7 @@ cmd_install() {
         [[ $src == "$ROOT/tmp/"* ]] && rm -f "$src"
     fi
     printf '%s\n' "Files of wato_asd_tooling (asd-dev): VS Code dev sessions in SLURM jobs. Run $ROOT/bin/asd-dev help" >"$ROOT/README"
-    [[ -f $CONFIG ]] || create_default_config
+    if [[ -f $CONFIG ]]; then upgrade_config; else create_default_config; fi
     load_config
     if (($#)); then
         apply_settings "setup" "$@"
@@ -587,6 +670,7 @@ cmd_install() {
         chmod 600 "$HOSTKEY"
     fi
     find "$LOGS" -name '*.log' -mtime +14 -delete 2>/dev/null || true
+    cleanup_stale
     say "session defaults: $(describe_resources); change them with: $(hint "config key=value")"
     printf 'ASD_DEV_INSTALLED %s %s %s\n' "$ASD_DEV_VERSION" "$(id -un)" "$(id -u)"
     printf 'ASD_DEV_HOSTKEY %s\n' "$(cut -d' ' -f1,2 "$HOSTKEY.pub")"

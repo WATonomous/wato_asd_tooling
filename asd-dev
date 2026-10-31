@@ -51,6 +51,7 @@ remote() { # runs the cluster helper with the given arguments
 }
 
 unexpected() { echo "asd-dev: ERROR: unexpected argument '$1'; to name a session use --name $1" >&2; exit 1; }
+need_value() { (($# >= 2)) || { echo "asd-dev: ERROR: $1 needs a value" >&2; exit 1; }; } # need_value "$@"
 
 alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; else printf 'asd-dev-session-%s' "$1"; fi; }
 
@@ -95,10 +96,10 @@ cmd_start() {
     while (($#)); do
         case $1 in
             --no-code) no_code=yes ;;
-            --folder) folder=${2:?--folder needs a path}; shift ;;
+            --folder) need_value "$@"; folder=$2; shift ;;
             --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --partition)
-                args+=("$1" "${2:?$1 needs a value}"); shift ;;
-            --name) name=${2:?--name needs a value}; args+=("$1" "$2"); shift ;;
+                need_value "$@"; args+=("$1" "$2"); shift ;;
+            --name) need_value "$@"; name=$2; args+=("$1" "$2"); shift ;;
             -*) args+=("$1") ;;
             *) unexpected "$1" ;;
         esac
@@ -115,8 +116,8 @@ cmd_code() {
     local name="" folder=""
     while (($#)); do
         case $1 in
-            --folder) folder=${2:?--folder needs a path}; shift ;;
-            --name) name=${2:?--name needs a value}; shift ;;
+            --folder) need_value "$@"; folder=$2; shift ;;
+            --name) need_value "$@"; name=$2; shift ;;
             -*) echo "unknown option $1" >&2; exit 1 ;;
             *) unexpected "$1" ;;
         esac
@@ -128,14 +129,14 @@ cmd_code() {
 
 cmd_ssh() {
     local name=""
-    if [[ ${1:-} == --name ]]; then name=${2:?--name needs a value}; shift 2; fi
+    if [[ ${1:-} == --name ]]; then need_value "$@"; name=$2; shift 2; fi
     ensure_host "$name"
     exec ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$(alias_for "$name")" "$@"
 }
 
 cmd_add() {
     case ${1:-} in
-        --name) ensure_host "$(printf '%s' "${2:?--name needs a value}" | tr '[:upper:]' '[:lower:]')" ;;
+        --name) need_value "$@"; ensure_host "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ;;
         "" | -*) usage >&2; exit 1 ;;
         *) unexpected "$1" ;;
     esac
