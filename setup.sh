@@ -54,7 +54,7 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
 
 Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the values given change):
   --cpus N --mem 16G --time 6:00:00 --tmpdisk MiB --vram MiB --gpus N --gpu-type TYPE
-  --idle-timeout MIN --auto-start yes|no --docker-state yes|no
+  --docker-state yes|no
 EOF
 }
 
@@ -78,7 +78,7 @@ while (($#)); do
         --agent-forwarding) ARG_FORWARD=yes ;;
         --no-windows) DO_WINDOWS=no ;;
         --yes | -y) ASSUME_YES=yes ;;
-        --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --idle-timeout | --auto-start | --docker-state)
+        --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --docker-state)
             key=${1#--}
             key=$(printf '%s' "$key" | tr '-' '_')
             add_setting "$key" "${2:?$1 needs a value}"
@@ -320,8 +320,6 @@ write_known_hosts() {
     alias=$(kh_alias)
     [[ -f $file ]] && grep -v "^$alias " "$file" >"$tmp" || true
     printf '%s %s\n' "$alias" "$HOSTKEY" >>"$tmp"
-    # The old tooling's sessions use the default install's name.
-    [[ -n $LEGACY_HOSTKEY && $alias == asd-dev-session ]] && printf '%s %s\n' "$alias" "$LEGACY_HOSTKEY" >>"$tmp"
     cat "$tmp" >"$file"
     chmod 600 "$file" 2>/dev/null || true
     rm -f "$tmp"
@@ -406,13 +404,6 @@ add_session_to() { # add_session_to CONFIG NAME
     install_block "$config" "$(make_block "$(previous_value "$config" identityfile)" "$known" "$proxy")"
 }
 
-legacy_session_value() { # value of an export in the old session_config.sh, unless it is a placeholder
-    local f="$REPO_DIR/session_config.sh" v
-    [[ -f $f ]] || return 0
-    v=$(sed -n "s/^export $1=\"\\([^\"]*\\)\".*/\\1/p" "$f" | head -n1)
-    case $v in your_watcloud_username | watcloud_remote_host | path_to_private_key | "") ;; *) printf '%s' "$v" ;; esac
-}
-
 # ---------------------------------------------------------------- main
 
 add_session_main() {
@@ -477,7 +468,6 @@ main() {
     step "Your cluster username"
     local def_user
     def_user=${ARG_USER:-$(previous_value "$config" user)}
-    def_user=${def_user:-$(legacy_session_value REMOTE_USER)}
     if [[ -z $ARG_USER ]]; then
         info "This is the 'Username' in the 'Compute Cluster' section of your WATcloud profile,"
         info "the name you use in 'ssh <username>@wato-login1.ext.watonomous.ca'. It can differ from"
@@ -495,7 +485,6 @@ main() {
     step "Your SSH key"
     local key def_key="" candidates=() f
     def_key=${ARG_KEY:-$(previous_value "$config" identityfile)}
-    def_key=${def_key:-$(legacy_session_value SSH_KEY)}
     local d n c dup
     for d in "$HOME/.ssh" "$sshdir"; do
         for n in id_ed25519 id_ecdsa id_rsa; do
@@ -645,7 +634,6 @@ main() {
         fail "installing the helper on the cluster failed (exit code $rc):" "$out"
     fi
     HOSTKEY=$(printf '%s\n' "$out" | sed -n 's/^ASD_DEV_HOSTKEY //p' | tr -d '\r')
-    LEGACY_HOSTKEY=$(printf '%s\n' "$out" | sed -n 's/^ASD_DEV_LEGACY_HOSTKEY //p' | tr -d '\r')
     [[ -n $HOSTKEY ]] || fail "the cluster did not report the session host key:" "$out"
     printf '%s\n' "$out" | grep '^asd-dev:' || true
     ok "  installed $(printf '%s\n' "$out" | awk '/^ASD_DEV_INSTALLED/ { print "asd-dev " $2 }')"
@@ -682,11 +670,10 @@ main() {
     check_vscode "$config"
 
     step "Done"
-    ok "To work in a session, open VS Code > Remote Explorer > SSH > asd-dev-session > Connect"
-    ok "(or press F1, run 'Remote-SSH: Connect to Host...' and pick asd-dev-session)."
-    info "The first connection starts a session job; it stops by itself after a while with nothing"
-    info "connected. Stop it sooner from the VS Code terminal with: asd-dev stop"
-    info "From this computer: $REPO_DIR/asd-dev status | start | stop     (or: ssh asd-dev-session)"
+    ok "Start a session: $REPO_DIR/asd-dev start   (it waits for the job and then opens VS Code)"
+    ok "Then, or any time it runs: VS Code > Remote Explorer > SSH > asd-dev-session > Connect."
+    info "It ends at its time limit, or with: ./asd-dev stop (or asd-dev stop in the session's terminal)."
+    info "Other commands: ./asd-dev status | config | logs     (terminal: ssh asd-dev-session)"
     if [[ -n $proxy_f ]]; then
         warn "you used --ssh-config: VS Code only uses $config if its 'remote.SSH.configFile' setting points there,"
         warn "and the laptop commands need ASD_DEV_SSH_CONFIG=$config"
@@ -760,5 +747,5 @@ check_vscode() {
     fi
 }
 
-HOSTKEY="" LEGACY_HOSTKEY="" TMPCFG=""
+HOSTKEY="" TMPCFG=""
 main

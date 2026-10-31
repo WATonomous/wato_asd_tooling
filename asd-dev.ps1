@@ -16,8 +16,8 @@ Usage: .\asd-dev.cmd COMMAND [args]
 
   start [NAME] [options]  start a session (if needed), wait until it is ready, open VS Code
                           options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
-                          --gpu-type TYPE --tmpdisk MiB --idle-timeout MIN; --no-code; --folder PATH
-  code [NAME] [--folder PATH]  open VS Code in a session (connecting starts one if needed)
+                          --gpu-type TYPE --tmpdisk MiB --no-docker-state; --no-code; --folder PATH
+  code [NAME] [--folder PATH]  open VS Code in a running session
   add NAME                add the host asd-dev-session-NAME for a named session (start does it too)
   stop [NAME] [--now]     stop a session (--all: every session)
   status                  list your sessions
@@ -26,7 +26,8 @@ Usage: .\asd-dev.cmd COMMAND [args]
   ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run setup
 
-Usually you only need VS Code: connect to "asd-dev-session" and a session starts by itself.
+Connecting VS Code only connects: start a session first with "start"; it ends at its time
+limit or with "stop".
 '@ | Write-Host
 }
 
@@ -100,7 +101,7 @@ if ($args.Count -gt 1) { $rest = @($args[1..($args.Count - 1)] | ForEach-Object 
 switch ($cmd) {
     'start' {
         $words = @('start'); $noCode = $false; $folder = ''; $name = ''
-        $valued = @('--cpus', '--mem', '--time', '--tmpdisk', '--vram', '--gpus', '--gpu-type', '--partition', '--idle-timeout')
+        $valued = @('--cpus', '--mem', '--time', '--tmpdisk', '--vram', '--gpus', '--gpu-type', '--partition')
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
             elseif ($rest[$i] -eq '--folder') { $folder = $rest[++$i] }

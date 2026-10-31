@@ -58,7 +58,7 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
 
 Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the values given change):
   --cpus N --mem 16G --time 6:00:00 --tmpdisk MiB --vram MiB --gpus N --gpu-type TYPE
-  --idle-timeout MIN --auto-start yes|no --docker-state yes|no
+  --docker-state yes|no
 '@ | Write-Host
 }
 
@@ -66,7 +66,7 @@ Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the 
 
 $ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $ArgClusterDir = ''; $ArgForward = ''; $ArgAdd = ''; $AssumeYes = $false
 $ClusterSettings = @()
-$settingNames = @('cpus', 'mem', 'time', 'tmpdisk', 'vram', 'gpus', 'gpu-type', 'idle-timeout', 'auto-start', 'docker-state')
+$settingNames = @('cpus', 'mem', 'time', 'tmpdisk', 'vram', 'gpus', 'gpu-type', 'docker-state')
 for ($i = 0; $i -lt $args.Count; $i++) {
     $a = [string]$args[$i]
     $name = $a.TrimStart('-').ToLowerInvariant()
@@ -262,8 +262,6 @@ function Write-KnownHosts([string]$file) {
     $alias = Get-KhAlias
     $keep = @(Read-Lines $file | Where-Object { $_ -and -not $_.StartsWith("$alias ") })
     $keep += "$alias $script:HostKey"
-    # The old tooling's sessions use the default install's name.
-    if ($script:LegacyHostKey -and $alias -eq 'asd-dev-session') { $keep += "$alias $script:LegacyHostKey" }
     [System.IO.File]::WriteAllText($file, (($keep -join "`n") + "`n"), $Utf8NoBom)
 }
 
@@ -518,8 +516,6 @@ try {
 }
 $out = $r.Text -split "`n"
 $script:HostKey = (($out | Where-Object { $_ -match '^ASD_DEV_HOSTKEY ' }) -replace '^ASD_DEV_HOSTKEY ', '').Trim()
-$script:LegacyHostKey = (($out | Where-Object { $_ -match '^ASD_DEV_LEGACY_HOSTKEY ' }) -replace '^ASD_DEV_LEGACY_HOSTKEY ', '')
-if ($script:LegacyHostKey) { $script:LegacyHostKey = ([string]$script:LegacyHostKey).Trim() }
 if (-not $script:HostKey) { Fail 'the cluster did not report the session host key:' @($r.Text) }
 $out | Where-Object { $_ -match '^asd-dev:' } | ForEach-Object { Write-Host $_ }
 $installed = ($out | Where-Object { $_ -match '^ASD_DEV_INSTALLED ' }) -replace '^ASD_DEV_INSTALLED (\S+).*', 'asd-dev $1'
@@ -558,11 +554,10 @@ foreach ($d in @('Code', 'Cursor', 'VSCodium')) {
 }
 
 Step 'Done'
-Ok 'To work in a session, open VS Code > Remote Explorer > SSH > asd-dev-session > Connect'
-Ok "(or press F1, run 'Remote-SSH: Connect to Host...' and pick asd-dev-session)."
-Info 'The first connection starts a session job; it stops by itself after a while with nothing'
-Info 'connected. Stop it sooner from the VS Code terminal with: asd-dev stop'
-Info "From this computer: $RepoDir\asd-dev.cmd status | start | stop     (or: ssh asd-dev-session)"
+Ok "Start a session: $RepoDir\asd-dev.cmd start   (it waits for the job and then opens VS Code)"
+Ok 'Then, or any time it runs: VS Code > Remote Explorer > SSH > asd-dev-session > Connect.'
+Info 'It ends at its time limit, or with: .\asd-dev.cmd stop (or asd-dev stop in the session''s terminal).'
+Info 'Other commands: .\asd-dev.cmd status | config | logs     (terminal: ssh asd-dev-session)'
 if ($ProxyConfig) {
     Warn "you used --ssh-config: VS Code only uses $Config if its 'remote.SSH.configFile' setting points there,"
     Warn "and asd-dev.cmd needs the environment variable ASD_DEV_SSH_CONFIG=$Config"
