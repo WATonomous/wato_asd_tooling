@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.1.0-rc.4
+ASD_DEV_VERSION=2.1.0-rc.5
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=20
+ASD_DEV_SERIAL=21
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -32,7 +32,7 @@ HOSTKEY="$ROOT/ssh_host_ed25519_key"
 INSTALL_ID=$(basename "$ROOT")
 JOB_COMMENT="asd-dev:$INSTALL_ID"
 JOB_PREFIX=asd-dev
-DOCKER_STATE_ROOT=/mnt/wato-drive/slurm-docker-sessions
+DOCKER_STATE_ROOT=${ASD_DEV_STATE_ROOT:-/mnt/wato-drive/slurm-docker-sessions} # override for tests
 CLUSTER_DOMAIN=cluster.watonomous.ca
 
 export PATH="/opt/slurm/bin:$PATH"
@@ -682,7 +682,7 @@ cmd_install() {
 # ---------------------------------------------------------------- the session job: docker state
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
-human_size() { numfmt --to=iec --suffix=B "$(stat -c %s "$1")"; }
+human_size() { numfmt --to=iec --suffix=B "$(stat -L -c %s "$1")"; }
 
 # Saving is safe only after a complete load: saving after a failed or partial load would replace
 # the good saved state with an empty or partial one.
@@ -692,18 +692,29 @@ NOTICE_QUEUE=/tmp/.asd-dev-notices
 
 # The default install keeps the old tooling's file names (so saved images carry over);
 # other installs get their own files.
-docker_state_file() {
+state_base() {
     local base=slurm-docker-state
     [[ $SESSION_NAME == default ]] || base+="-$SESSION_NAME"
     [[ $INSTALL_ID == .asd-dev ]] || base+="-${INSTALL_ID#.}"
-    printf '%s' "$DOCKER_STATE_DIR/$base.tar.zst"
+    printf '%s' "$base.tar.zst"
+}
+docker_state_file() { printf '%s' "$DOCKER_STATE_DIR/$(state_base)"; }
+
+# The parent directory is shared, so load and save first cd into our directory, check "." and
+# then use only relative paths: they keep working on the directory that was checked.
+# Returns 0 when the directory is ours alone, 1 when it is not, 2 when it does not exist.
+enter_state_dir() {
+    local parent owner mode
+    parent=$(cd -P "$DOCKER_STATE_ROOT" 2>/dev/null && pwd) || return 2
+    cd -P "$DOCKER_STATE_DIR" 2>/dev/null || return 2
+    read -r owner mode < <(stat -c '%u %a' .) || return 1
+    # It must be the real <parent>/<uid>, not a link to somewhere else.
+    [[ $(pwd -P) == "$parent/$(id -u)" && $owner == "$(id -u)" && $mode =~ [0-7][0145][0145]$ ]]
 }
 
-# Docker state is used only from a directory the user owns alone.
-docker_state_dir_ok() {
-    local owner mode
-    read -r owner mode < <(stat -c '%u %a' "$DOCKER_STATE_DIR" 2>/dev/null) || return 1
-    [[ $owner == "$(id -u)" && $mode =~ [0-7][0145][0145]$ ]]
+STATE_NOT_OURS="is not yours alone (someone else owns it, others can write to it, or it is a link)"
+state_check_hint() {
+    printf 'Check it with: ls -la %s. If the folder is yours, run chmod 700 on it; if someone else created it or the file in it, ask WATcloud to remove that.' "$DOCKER_STATE_DIR"
 }
 
 # Queues a notice for the session's terminals (written once one exists, see the main loop).
@@ -716,30 +727,39 @@ saving_off() { # saving_off REASON WHAT_TO_DO
 }
 
 # Renames the saved state to <file>.old-<time>. Keeps this copy and the one before it; older
-# copies are deleted (state files can be many GB on the shared drive).
+# copies are deleted (state files can be many GB on the shared drive). Runs in the state dir.
 move_state_aside() { # move_state_aside WHY
-    local file old gone
-    file=$(docker_state_file)
-    old="$file.old-$(date '+%Y%m%d-%H%M%S')"
-    mv -f "$file" "$old"
-    rm -f "$file.size" "$file.failures"
+    local base old gone
+    base=$(state_base)
+    old="$base.old-$(date '+%Y%m%d-%H%M%S')"
+    mv -f "./$base" "./$old"
+    rm -f "./$base.size" "./$base.failures"
     # shellcheck disable=SC2012 # our own file names; the timestamp makes name order age order
-    gone=$(ls -1 "$file".old-* 2>/dev/null | sort -r | tail -n +3 || true)
+    gone=$(ls -1 ./"$base".old-* 2>/dev/null | sort -r | tail -n +3 || true)
     if [[ -n $gone ]]; then printf '%s\n' "$gone" | while IFS= read -r f; do rm -f "$f"; done; fi
-    log "[docker] $1: moved $file aside to $old${gone:+; deleted older copies: $(printf '%s' "$gone" | tr '\n' ' ')}"
-    queue_notice "asd-dev: $1, so the saved docker state was moved aside to $old. The two newest such copies are kept (delete them when you no longer need them); older ones are deleted. Docker starts empty and saves a new state when this session ends."
+    log "[docker] $1: moved $DOCKER_STATE_DIR/$base aside to $DOCKER_STATE_DIR/$old${gone:+; deleted older copies: $(printf '%s' "$gone" | tr '\n' ' ')}"
+    queue_notice "asd-dev: $1, so the saved docker state was moved aside to $DOCKER_STATE_DIR/$old. The two newest such copies are kept (delete them when you no longer need them); older ones are deleted. Docker starts empty and saves a new state when this session ends."
 }
 
-load_docker_state() {
-    local file need avail failures use
-    file=$(docker_state_file)
-    [[ -f $file ]] || {
-        log "[docker] no saved docker state for this session yet ($file)"
+# In a subshell, so that its cd into the state directory stays local.
+load_docker_state() (
+    local base rc=0 need avail failures use
+    base=$(state_base)
+    enter_state_dir || rc=$?
+    if ((rc == 2)); then
+        log "[docker] no saved docker state for this session yet ($DOCKER_STATE_DIR does not exist)"
+        return 0
+    elif ((rc != 0)); then
+        saving_off "your docker-state folder $DOCKER_STATE_DIR $STATE_NOT_OURS, so it was not used" "$(state_check_hint)"
+        return 0
+    fi
+    [[ -f ./$base ]] || {
+        log "[docker] no saved docker state for this session yet ($DOCKER_STATE_DIR/$base)"
         return 0
     }
-    if ! docker_state_dir_ok || [[ $(stat -c %u "$file") != "$(id -u)" ]]; then
-        log "[docker] WARNING: not loading $file: it or its directory is not owned by you, or others can write to it."
-        : >"$DOCKER_NOSAVE_MARK"
+    exec 3<"./$base"
+    if [[ $(stat -L -c %u /dev/fd/3) != "$(id -u)" ]]; then
+        saving_off "your saved docker state $DOCKER_STATE_DIR/$base $STATE_NOT_OURS, so it was not used" "$(state_check_hint)"
         return 0
     fi
     if [[ $RESET_DOCKER_STATE == yes ]]; then
@@ -749,16 +769,16 @@ load_docker_state() {
     # Saves record their unpacked size next to the archive. The old scripts rewrite the default
     # archive without one, so a record older than the archive does not count.
     need=""
-    if [[ -f $file.size && ! $file -nt $file.size ]]; then need=$(cat "$file.size" 2>/dev/null || true); fi
+    if [[ -f ./$base.size && ! ./$base -nt ./$base.size ]]; then need=$(cat "./$base.size" 2>/dev/null || true); fi
     avail=$(df --output=avail -B1 /tmp | tail -n1 | tr -d ' ')
     if [[ $need =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]] && ((need + need / 10 > avail)); then
         saving_off "the saved docker state needs $(numfmt --to=iec "$need")B in /tmp, but this session has only $(numfmt --to=iec "$avail")B" \
             "To restore it: $(restart_hint "--tmpdisk $((need * 12 / 10 / 1048576 + 4096))")"
         return 0
     fi
-    log "[docker] loading saved docker state ($(human_size "$file")) from $file ..."
-    if zstd -q -d --stdout "$file" | rootlesskit tar --blocking-factor=64 -xpf - -C / tmp/docker; then
-        rm -f "$file.failures"
+    log "[docker] loading saved docker state ($(human_size /dev/fd/3)) from $DOCKER_STATE_DIR/$base ..."
+    if zstd -q -d --stdout <&3 | rootlesskit tar --blocking-factor=64 -xpf - -C / tmp/docker; then
+        rm -f "./$base.failures"
         log "[docker] docker state loaded"
         return 0
     fi
@@ -769,15 +789,15 @@ load_docker_state() {
             "To restore it: $(restart_hint "--tmpdisk $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))")"
         return 0
     fi
-    failures=$(($(cat "$file.failures" 2>/dev/null || echo 0) + 1))
+    failures=$(($(cat "./$base.failures" 2>/dev/null || echo 0) + 1))
     if ((failures >= 2)); then
         move_state_aside "the saved docker state could not be restored twice in a row (it looks damaged)"
         return 0
     fi
-    (umask 077 && echo "$failures" >"$file.failures")
+    (umask 077 && echo "$failures" >"./$base.failures")
     saving_off "the saved docker state could not be restored; it looks damaged" \
         "To discard it: $(restart_hint --reset-docker-state) (after one more failed restore it is moved aside by itself)."
-}
+)
 
 start_docker() {
     if [[ $DOCKER_STATE == yes ]]; then load_docker_state; fi
@@ -799,8 +819,9 @@ stop_dockerd() {
     log "[docker] WARNING: dockerd did not exit within 60 s"
 }
 
-save_docker_state() {
-    local why=$1 file tmp size
+# In a subshell, so that its cd into the state directory stays local.
+save_docker_state() (
+    local why=$1 base tmp="" size
     [[ $DOCKER_STATE == yes && -d /tmp/docker ]] || return 0
     if [[ ! -e $DOCKER_LOADED_MARK ]]; then
         log "[docker] not saving docker state: it was still being loaded"
@@ -810,34 +831,34 @@ save_docker_state() {
         log "[docker] not saving docker state: saving is off for this session (see above), the saved file is kept"
         return 0
     fi
-    file=$(docker_state_file)
-    if [[ ! -d $DOCKER_STATE_DIR ]]; then
-        mkdir -p "$DOCKER_STATE_DIR" && chmod 700 "$DOCKER_STATE_DIR"
-    fi
-    if ! docker_state_dir_ok; then
-        log "[docker] WARNING: not saving docker state: $DOCKER_STATE_DIR is not owned by you or others can write to it"
+    base=$(state_base)
+    # First use: -m sets the mode as the directory is created (no window between mkdir and chmod).
+    mkdir -m 700 "$DOCKER_STATE_DIR" 2>/dev/null || true
+    if ! enter_state_dir; then
+        log "[docker] WARNING: not saving docker state: $DOCKER_STATE_DIR $STATE_NOT_OURS"
+        notify_terminals "asd-dev: docker state NOT saved: your docker-state folder $DOCKER_STATE_DIR $STATE_NOT_OURS. $(state_check_hint)"
         return 0
     fi
-    log "[docker] saving docker state ($why) to $file ..."
+    log "[docker] saving docker state ($why) to $DOCKER_STATE_DIR/$base ..."
     # Leftovers of saves that SLURM killed (old ones only, in case another job is saving now).
-    find "$DOCKER_STATE_DIR" -maxdepth 1 \( -name "$(basename "$file").tmp.*" -o -name "$(basename "$file").size.*" \) \
-        -mmin +60 -delete 2>/dev/null || true
-    tmp=$(mktemp "$file.tmp.XXXXXX")
-    SAVE_TMP=$tmp
+    find . -maxdepth 1 \( -name "$base.tmp.*" -o -name "$base.size.*" \) -mmin +60 -delete 2>/dev/null || true
+    # A save cut short by SLURM leaves a partial archive; the previous save stays in place.
+    trap '[[ -n $tmp ]] && rm -f "./$tmp"; exit 143' TERM INT HUP
+    tmp=$(mktemp "$base.tmp.XXXXXX")
     # Read the archive back before it replaces the previous one; that also yields the unpacked
     # size, which the next load compares with the free /tmp space.
-    if rootlesskit tar -C / -cf - tmp/docker | zstd -q -T0 -3 >"$tmp" &&
-        size=$(zstd -q -d --stdout "$tmp" | wc -c) && ((size > 0)) && mv -f "$tmp" "$file"; then
-        SAVE_TMP=""
-        (umask 077 && printf '%s\n' "$size" >"$file.size.$$") && mv -f "$file.size.$$" "$file.size" || true
-        rm -f "$file.failures"
-        log "[docker] docker state saved ($(human_size "$file"), $(numfmt --to=iec "$size")B unpacked)"
+    if rootlesskit tar -C / -cf - tmp/docker | zstd -q -T0 -3 >"./$tmp" &&
+        size=$(zstd -q -d --stdout "./$tmp" | wc -c) && ((size > 0)) && mv -f "./$tmp" "./$base"; then
+        tmp=""
+        (umask 077 && printf '%s\n' "$size" >"./$base.size.$$") && mv -f "./$base.size.$$" "./$base.size" || true
+        rm -f "./$base.failures"
+        log "[docker] docker state saved ($(human_size "./$base"), $(numfmt --to=iec "$size")B unpacked)"
     else
-        rm -f "$tmp"
-        SAVE_TMP=""
+        rm -f "./$tmp"
+        tmp=""
         log "[docker] WARNING: saving docker state failed; the previous save is kept"
     fi
-}
+)
 
 # ---------------------------------------------------------------- the session job: sshd
 
@@ -964,8 +985,6 @@ finish() { # finish REASON
 on_term() {
     log "SLURM is ending the job (time limit or scancel)"
     notify_terminals "asd-dev: SLURM is ending this session now (time limit reached, or the job was cancelled)."
-    # A save cut short by SLURM leaves a partial archive; the previous save stays in place.
-    [[ -n ${SAVE_TMP:-} ]] && rm -f "$SAVE_TMP"
     remove_job_files
     exit 143
 }
@@ -984,7 +1003,7 @@ cmd_job() {
         esac
     done
     # Traps first: with a short --time, SLURM's USR1 can arrive within seconds of the start.
-    WARN_REQUESTED=no SSHD_PID="" PORT="" SAVE_TMP="" TMP_WARNED=no
+    WARN_REQUESTED=no SSHD_PID="" PORT="" TMP_WARNED=no
     trap on_term TERM INT HUP
     trap 'WARN_REQUESTED=yes' USR1
     unset SSH_AUTH_SOCK SSH_CLIENT SSH_CONNECTION SSH_TTY
