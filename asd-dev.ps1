@@ -119,6 +119,7 @@ switch ($cmd) {
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
             elseif ($rest[$i] -eq '--folder') { $folder = Get-Value $rest $i; $i++ }
+            elseif ($rest[$i].StartsWith('--folder=')) { $folder = $rest[$i].Substring(9) }
             elseif ($rest[$i] -eq '--name') { $name = Get-Value $rest $i; $words += $rest[$i]; $words += $name; $i++ }
             elseif ($rest[$i].StartsWith('--name=')) { $name = $rest[$i].Substring(7); $words += $rest[$i] }
             # Session options go to the cluster helper, which checks them.
