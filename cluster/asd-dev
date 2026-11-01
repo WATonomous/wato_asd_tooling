@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.2.0-rc.2
+ASD_DEV_VERSION=2.2.0-rc.5
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=23
+ASD_DEV_SERIAL=26
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -56,6 +56,7 @@ RETIRED_KEYS=" auto_start auto_start_cooldown idle_timeout connect_wait "
 # wrappers pass --from=unix|windows; a session terminal has asd-dev on PATH; on a login node it
 # is not.
 FROM=""
+PARSING_CONFIG=no # "config set" has no session names, so a bare word gets no --name hint
 # shellcheck disable=SC2088 # printed for the user to type
 hint() { # hint "ARGS": the asd-dev command line for the reader
     case $FROM in
@@ -155,7 +156,7 @@ load_config() {
         line=${line//[[:space:]]/}
         [[ -n $line ]] || continue
         if [[ $line != --*=* ]] || ! key=$(option_key "${line%%=*}"); then
-            die "$CONFIG: cannot read '$line'." "Each line is one option, such as --mem=32G. Change them with: $(hint "config --mem 32G")"
+            die "$CONFIG: cannot read '$line'." "Each line is one option, such as --mem=32G. Change them with: $(hint "config set --mem 32G")"
         fi
         apply_settings "$CONFIG" "$key=${line#*=}"
         FILE_SET[$key]=${line#*=}
@@ -165,9 +166,9 @@ load_config() {
 config_header() {
     cat <<'EOF'
 # asd-dev defaults for new sessions: sbatch options, one per line (--option=value). Change them
-# from your laptop with  ./asd-dev config --mem 32G --gres tmpdisk:40960,shard:8192  (Windows:
-# .\asd-dev.cmd config ...; in a session's terminal: asd-dev config ...) or edit this file;
-# "config --unset mem" removes a line. Without a line: --cpus-per-task=4 --mem=16G --time=6:00:00
+# from your laptop with  ./asd-dev config set --mem 32G --gres tmpdisk:40960,shard:8192  (Windows:
+# .\asd-dev.cmd config set ...; in a session's terminal: asd-dev config set ...) or edit this
+# file; "config unset mem" removes a line. Without a line: --cpus-per-task=4 --mem=16G --time=6:00:00
 # --docker-state=yes, and --gres always includes tmpdisk:10240 (the job's /tmp) unless it names tmpdisk.
 EOF
 }
@@ -248,7 +249,7 @@ old_option_hint() {
         tmpdisk) printf -- '--gres tmpdisk:%s' "$2" ;;
         vram) printf -- '--gres shard:%s (a GPU slice of that many MiB)' "$2" ;;
         gpu-type | gpu_type) printf -- '--gres gpu:%s:1 (a whole GPU) or --gres shard:%s:MiB (a slice)' "$2" "$2" ;;
-        no-gpu) printf 'no GPU option (config --unset gres --unset gpus clears saved ones)' ;;
+        no-gpu) printf 'no GPU option (config unset gres gpus clears saved ones)' ;;
         no-docker-state) printf -- '--docker-state no' ;;
         docker_state) printf -- '--docker-state %s' "$2" ;;
         mem | time | partition | gpus) printf -- '--%s %s' "$1" "$2" ;;
@@ -351,7 +352,7 @@ explain_reason() {
         QOSMax* | AssocMax* | AssocGrp* | QOSGrp* | MaxCpuPerAccount | MaxGRESPerAccount | MaxMemPerLimit)
             echo "held back by your per-user limit ($1): your other jobs already use your share; stop some (squeue --me) or ask for less"
             ;;
-        ReqNodeNotAvail* | PartitionDown | NodeDown) echo "the nodes that fit this request are unavailable right now ($1)" ;;
+        ReqNodeNotAvail* | PartitionDown | NodeDown) echo "waiting for nodes that fit this request, which are unavailable right now ($1)" ;;
         PartitionTimeLimit) echo "the time limit is longer than the partition allows ($1)"; return 1 ;;
         BadConstraints | PartitionConfig | InvalidQOS | InvalidAccount | QOSJobLimit) echo "SLURM cannot run this request ($1)"; return 1 ;;
         JobHeld* | launch_failed_requeued_held) echo "held by SLURM ($1)"; return 1 ;;
@@ -362,6 +363,8 @@ explain_reason() {
 # ---------------------------------------------------------------- session state files
 
 state_file() { printf '%s/%s.env' "$SESSIONS" "$1"; }
+# True once whoever ran this command is gone: a closed laptop ssh sends no signal without a pty.
+client_gone() { [[ $(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ') != "$PPID" ]]; }
 is_stopping() { [[ -e $SESSIONS/$1.stopping || -e $SESSIONS/$1.stop ]]; }
 
 # Reads the session state written by the job into S_* globals; returns 1 if missing.
@@ -387,6 +390,7 @@ read_state() {
 wait_ready() {
     local deadline=$1 msg last_msg="" why running_since=""
     while true; do
+        if client_gone; then exit 130; fi
         refresh_job
         case $J_STATE in
             PENDING | CONFIGURING | REQUEUED | RESIZING)
@@ -457,18 +461,18 @@ cmd_proxy() {
     exit "$rc"
 }
 
-# Parses the arguments of start/stop/status/logs/config into NAME, FLAG_* and FLAG_SETTINGS
+# Parses the arguments of start/stop/status/logs/config set into NAME, FLAG_* and FLAG_SETTINGS
 # ("key=value", key = sbatch's long option name).
 parse_session_flags() {
     # Inside a session, "asd-dev stop" means this session (sshd's SetEnv provides ASD_DEV_SESSION).
-    NAME=${ASD_DEV_SESSION:-default} NAME_GIVEN=no FLAG_SETTINGS=() FLAG_UNSET=() FLAG_NOW=no FLAG_JOB=""
+    NAME=${ASD_DEV_SESSION:-default} NAME_GIVEN=no FLAG_SETTINGS=() FLAG_NOW=no FLAG_JOB=""
     FLAG_ALL=no FLAG_FOLLOW=no RESET_DOCKER_STATE=no
     local word opt value key hint_text
     while (($#)); do
         word=$1 opt=$1 value=""
         if [[ $word == --*=* ]]; then opt=${word%%=*} value=${word#*=}; fi
         key=$(option_key "$opt") || key=""
-        if [[ -n $key || $opt == --name || $opt == --job || $opt == --unset ]] && [[ $word != *=* ]]; then
+        if [[ -n $key || $opt == --name || $opt == --job ]] && [[ $word != *=* ]]; then
             (($# >= 2)) || die "$opt needs a value"
             value=$2
             shift
@@ -479,20 +483,15 @@ parse_session_flags() {
             continue
         fi
         case $opt in
-            --name) NAME=$value NAME_GIVEN=yes ;;
+            --name) NAME=${value,,} NAME_GIVEN=yes ;;
             --job) FLAG_JOB=$value ;;
-            --unset)
-                key=$(option_key "--${value#--}") || key=$(option_key "$value") ||
-                    die "--unset: '$value' is not a session option." "$OPTIONS_LINE"
-                FLAG_UNSET+=("$key")
-                ;;
             --reset-docker-state) RESET_DOCKER_STATE=yes ;;
             --now) FLAG_NOW=yes ;;
             --all) FLAG_ALL=yes ;;
             -f | --follow) FLAG_FOLLOW=yes ;;
             -h | --help) usage; exit 0 ;;
             --cpus | --tmpdisk | --vram | --gpu-type | --no-gpu | --no-docker-state)
-                die "$opt is gone: asd-dev now takes sbatch's own options. Use $(old_option_hint "${opt#--}" "${2:-N}")." ;;
+                die "$opt is gone: asd-dev now takes sbatch's own options. Use $(old_option_hint "${opt#--}" "${value:-${2:-N}}")." ;;
             -o | --output | -e | --error | -J | --job-name | --comment | --wrap | -a | --array | -D | --chdir | \
                 --export | --signal | --parsable | -W | --wait | -n | --ntasks | -N | --nodes)
                 die "$opt cannot be used: the session job sets it itself, or it would break the session." \
@@ -509,8 +508,9 @@ parse_session_flags() {
                 ;;
             *)
                 if [[ $word =~ ^[a-z][a-z0-9_]*:[A-Za-z0-9_:-]+$ ]]; then
-                    die "unexpected argument '$word'." "If it belongs to --gres, join the items with commas; in PowerShell quote the value: --gres \"tmpdisk:40960,shard:8192\""
+                    die "unexpected argument '$word'." "If it belongs to --gres, join the items with commas: --gres tmpdisk:40960,shard:8192"
                 fi
+                [[ $PARSING_CONFIG == no ]] || die "unexpected argument '$word'" "$OPTIONS_LINE"
                 die "unexpected argument '$word'; to name a session use --name $word"
                 ;;
         esac
@@ -532,7 +532,6 @@ refuse_existing() { # dies for the session job in J_*
 
 cmd_start() {
     parse_session_flags "$@"
-    ((${#FLAG_UNSET[@]} == 0)) || die "--unset works only with config."
     load_config
     if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
     if find_session_job "$NAME"; then refuse_existing; fi
@@ -573,16 +572,21 @@ cmd_start() {
     fi
     J_ID=$new
     say "submitted job $J_ID: $(describe_resources)"
-    trap 'say "stopped waiting; job $J_ID keeps going. Check it with: $(hint status)   cancel it with: $(hint "$(with_name stop "$NAME")")"; exit 130' INT
+    trap 'say "stopped waiting; job $J_ID keeps going. Check it with: $(hint status)   cancel it with: $(hint "$(with_name stop "$NAME")")"; exit 130' INT HUP TERM
     wait_ready 0
-    trap - INT
+    trap - INT HUP TERM
     refresh_job
-    say "ready: connect VS Code to $(host_alias "$NAME") (job $J_ID on $J_NODE, $J_LEFT left; terminal: ssh $(host_alias "$NAME"))."
+    # Only the laptop wrappers read the READY line, and only there does "ssh <alias>" work.
+    local laptop=no term
+    [[ $FROM == unix || $FROM == windows ]] && laptop=yes
+    term="terminal: ssh $(host_alias "$NAME")"
+    [[ $laptop == yes ]] || term="from your laptop: ssh $(host_alias "$NAME")"
+    say "ready: connect VS Code to $(host_alias "$NAME") (job $J_ID on $J_NODE, $J_LEFT left; $term)."
     say "It ends at its time limit or with: $(hint "$(with_name stop "$NAME")")"
     if [[ $NAME != default && -n ${SLURM_JOB_ID:-} ]]; then
         say "VS Code lists $(host_alias "$NAME") once your laptop has its entry: $(laptop_hint "add --name $NAME")."
     fi
-    printf 'ASD_DEV_READY %s %s\n' "$(host_alias "$NAME")" "$J_ID"
+    if [[ $laptop == yes ]]; then printf 'ASD_DEV_READY %s %s\n' "$(host_alias "$NAME")" "$J_ID"; fi
 }
 
 # ---------------------------------------------------------------- commands: stop, status, logs, config
@@ -697,20 +701,46 @@ cmd_logs() {
     fi
     [[ -n $id && -f $LOGS/$id.log ]] || die "no log found${id:+ for job $id}."
     say "log of job $id: $LOGS/$id.log"
-    if [[ $FLAG_FOLLOW == yes ]]; then tail -n 50 -f "$LOGS/$id.log"; else tail -n 50 "$LOGS/$id.log"; fi
+    if [[ $FLAG_FOLLOW == yes ]]; then tail -n 50 -f --pid="$PPID" "$LOGS/$id.log"; else tail -n 50 "$LOGS/$id.log"; fi
 }
 
+# config: show the defaults; config set OPTIONS: save options; config unset OPTION...: remove them.
 cmd_config() {
-    parse_session_flags "$@"
-    [[ $NAME_GIVEN == no ]] || die "config sets the defaults of every session; it takes no --name."
+    local sub=${1:-} word k kv
+    shift || true
+    case $sub in
+        "" | set | unset) ;;
+        -h | --help) usage; exit 0 ;;
+        --name | --name=*) die "config sets the defaults of every session; it takes no --name." ;;
+        --unset) die "to remove a default use: $(hint "config unset ${1:-OPTION}")" ;;
+        -*) die "to change your defaults use: $(hint "config set $sub${*:+ $*}")" ;;
+        *) die "unknown config command '$sub'." "Show your defaults: $(hint config)" \
+            "Change one: $(hint "config set --mem 32G")   Remove one: $(hint "config unset mem")" ;;
+    esac
     mkdir -p "$ROOT"
     [[ -f $CONFIG ]] || create_default_config
     load_config
-    if ((${#FLAG_SETTINGS[@]} + ${#FLAG_UNSET[@]})); then
-        if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
-        local kv k
-        for k in ${FLAG_UNSET[@]+"${FLAG_UNSET[@]}"}; do unset "FILE_SET[$k]"; done
-        for kv in ${FLAG_SETTINGS[@]+"${FLAG_SETTINGS[@]}"}; do FILE_SET[${kv%%=*}]=${CFG[${kv%%=*}]}; done
+    case $sub in
+        set)
+            PARSING_CONFIG=yes
+            parse_session_flags "$@"
+            [[ $NAME_GIVEN == no ]] || die "config sets the defaults of every session; it takes no --name."
+            [[ $FLAG_NOW$FLAG_ALL$FLAG_FOLLOW$RESET_DOCKER_STATE == nononono && -z $FLAG_JOB ]] ||
+                die "config set takes only session options." "$OPTIONS_LINE"
+            ((${#FLAG_SETTINGS[@]})) || die "config set needs an option, e.g. $(hint "config set --mem 32G")" "$OPTIONS_LINE"
+            apply_settings "command line" "${FLAG_SETTINGS[@]}"
+            for kv in "${FLAG_SETTINGS[@]}"; do FILE_SET[${kv%%=*}]=${CFG[${kv%%=*}]}; done
+            ;;
+        unset)
+            (($#)) || die "config unset needs the options to remove, e.g. $(hint "config unset mem gres")" "$OPTIONS_LINE"
+            for word in "$@"; do
+                k=$(option_key "--${word#--}") || k=$(option_key "$word") ||
+                    die "config unset: '$word' is not a session option." "$OPTIONS_LINE"
+                if [[ -v FILE_SET[$k] ]]; then unset "FILE_SET[$k]"; else say "--$k was not set; nothing to remove."; fi
+            done
+            ;;
+    esac
+    if [[ -n $sub ]]; then
         write_config
         load_config
         say "saved to $CONFIG"
@@ -750,7 +780,7 @@ cmd_install() {
     find "$LOGS" -name '*.log' -mtime +14 -delete 2>/dev/null || true
     cleanup_stale
     say "session defaults: $(describe_resources)"
-    say "change them with: $(hint "config --mem 32G --gres tmpdisk:40960,shard:8192")"
+    say "change them with: $(hint "config set --mem 32G --gres tmpdisk:40960,shard:8192")"
     printf 'ASD_DEV_INSTALLED %s %s %s\n' "$ASD_DEV_VERSION" "$(id -un)" "$(id -u)"
     printf 'ASD_DEV_HOSTKEY %s\n' "$(cut -d' ' -f1,2 "$HOSTKEY.pub")"
     if [[ ! -s /etc/cluster/users/$(id -u)/.ssh/authorized_keys && ! -s $HOME/.ssh/authorized_keys ]]; then
@@ -1047,7 +1077,7 @@ check_tmp_space() {
         msg+=" docker keeps its images there. Free space with 'docker system prune', or give the next session more:"
         mib=$(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))
         ((mib > 40960)) || mib=40960
-        msg+=" asd-dev config --gres $(gres_with_tmpdisk "$mib") here, then $(restart_hint)"
+        msg+=" asd-dev config set --gres $(gres_with_tmpdisk "$mib") here, then $(restart_hint)"
         log "$msg"
         notify_terminals "$msg"
     elif ((use < 80)); then
@@ -1055,7 +1085,8 @@ check_tmp_space() {
     fi
 }
 
-remove_job_files() { rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID".{stop,stopping}; }
+# .stopping stays until cleanup_stale: SLURM lists the job for a moment after this script ends.
+remove_job_files() { rm -f "$(state_file "$SLURM_JOB_ID")" "$SESSIONS/$SLURM_JOB_ID.stop"; }
 
 finish() { # finish REASON
     # First, so the proxy and "asd-dev start" report "stopping" meanwhile.
@@ -1166,30 +1197,48 @@ cmd_job() {
 # ---------------------------------------------------------------- main
 
 usage() {
-    cat >&2 <<EOF
+    # Commands in the form that works where this is read (./asd-dev, .\asd-dev.cmd or asd-dev).
+    local p i w=0
+    if [[ $FROM == laptop ]]; then p='./asd-dev '; else p=$(hint ""); fi
+    local rows=(
+        "start [--name NAME] [options]" "start a session and wait until VS Code can connect to it"
+        "stop [--name NAME] [--now]" "stop a session (saves docker state first unless --now)"
+        "stop --all | --job ID" ""
+        "status [--name NAME]" "list your sessions"
+        "logs [--name NAME] [-f]" "show a session's log"
+        "config" "show your defaults ($CONFIG)"
+        "config set [options]" "change them, e.g. config set --mem 32G"
+        "config unset OPTION..." "remove them (back to the built-in default), e.g. config unset mem"
+        "version" ""
+    )
+    for ((i = 0; i < ${#rows[@]}; i += 2)); do
+        if ((${#p} + ${#rows[i]} > w)); then w=$((${#p} + ${#rows[i]})); fi
+    done
+    {
+        cat <<EOF
 asd-dev $ASD_DEV_VERSION: VS Code dev sessions inside WATcloud SLURM jobs.
 On your laptop run this as ./asd-dev (or .\asd-dev.cmd) in your wato_asd_tooling folder; in a
 session's terminal as asd-dev; on a login node as ~/$INSTALL_ID/bin/asd-dev.
 
-  asd-dev start [--name NAME] [options]  start a session and wait until VS Code can connect to it
-  asd-dev stop [--name NAME] [--now]     stop a session (saves docker state first unless --now)
-  asd-dev stop --all | --job ID
-  asd-dev status [--name NAME]           list your sessions
-  asd-dev logs [--name NAME] [-f]        show a session's log
-  asd-dev config [options] [--unset OPTION]  show or change your defaults ($CONFIG)
-  asd-dev version
+EOF
+        for ((i = 0; i < ${#rows[@]}; i += 2)); do
+            if [[ -n ${rows[i + 1]} ]]; then printf '  %-*s  %s\n' "$w" "$p${rows[i]}" "${rows[i + 1]}"; else printf '  %s\n' "$p${rows[i]}"; fi
+        done
+        cat <<EOF
 
-Session options, sbatch's own (one-off with start; saved as defaults with config):
+Session options, sbatch's own (one-off with start; saved as defaults with config set):
   $SESSION_OPTIONS
   e.g. --gres tmpdisk:40960 (CARLA), --gres shard:8192 (8 GiB slice of a GPU), --gres gpu:rtx_3090:1
   A --gres replaces the saved one but keeps its tmpdisk (the job's /tmp) unless it names one;
-  without any, tmpdisk:$TMPDISK_DEFAULT. In PowerShell quote a --gres with commas.
+  without any, tmpdisk:$TMPDISK_DEFAULT.
 start only: --reset-docker-state (move the saved docker state aside and start empty)
 
 Connecting VS Code to asd-dev-session[-NAME] only connects; it never starts a session.
---name runs more than one session: "asd-dev start --name gpu" is reached as "asd-dev-session-gpu".
+--name runs more than one session: "${p}start --name gpu" is reached as "asd-dev-session-gpu".
 Without --name it is the default session (in a session's terminal: that session).
 EOF
+        if [[ $FROM == unix || $FROM == windows ]]; then printf 'Laptop-only commands (code, ssh, add, setup): %shelp\n' "$p"; fi
+    } >&2
 }
 
 main() {

@@ -45,6 +45,7 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --no-windows       on WSL: do not also configure Windows (where VS Code runs)
   --no-agent-forwarding  do not forward your SSH agent into sessions (it is forwarded by default so
                      git over SSH works there; root on the compute node could use it meanwhile)
+  --agent-forwarding  forward it again after --no-agent-forwarding
   --add-session NAME only add the host asd-dev-session-NAME for a named session to the ssh config
                      (./asd-dev add --name NAME and ./asd-dev start --name NAME call this)
   --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
@@ -52,27 +53,28 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --yes              do not ask questions; use defaults and the values given
   -h, --help         show this help
 
-Session defaults (CPUs, memory, GPUs, /tmp) are set after setup with ./asd-dev config.
+Session defaults (CPUs, memory, GPUs, /tmp) are set after setup with ./asd-dev config set.
 EOF
 }
 
 # ---------------------------------------------------------------- arguments
 
 ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ARG_CLUSTER_DIR="" ARG_FORWARD="" ARG_ADD="" ASSUME_YES=no DO_WINDOWS=yes
+need_value() { (($# >= 2)) || fail "$1 needs a value"; } # need_value "$@"
 while (($#)); do
     case $1 in
-        --user) ARG_USER=${2:?--user needs a value}; shift ;;
-        --key) ARG_KEY=${2:?--key needs a value}; shift ;;
-        --login) ARG_LOGIN=${2:?--login needs a value}; shift ;;
-        --ssh-config) ARG_CONFIG=${2:?--ssh-config needs a value}; shift ;;
-        --cluster-dir) ARG_CLUSTER_DIR=${2:?--cluster-dir needs a value}; shift ;;
-        --add-session) ARG_ADD=$(printf '%s' "${2:?--add-session needs a name}" | tr '[:upper:]' '[:lower:]'); shift ;;
+        --user) need_value "$@"; ARG_USER=$2; shift ;;
+        --key) need_value "$@"; ARG_KEY=$2; shift ;;
+        --login) need_value "$@"; ARG_LOGIN=$2; shift ;;
+        --ssh-config) need_value "$@"; ARG_CONFIG=$2; shift ;;
+        --cluster-dir) need_value "$@"; ARG_CLUSTER_DIR=$2; shift ;;
+        --add-session) need_value "$@"; ARG_ADD=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]'); shift ;;
         --no-agent-forwarding) ARG_FORWARD=no ;;
         --agent-forwarding) ARG_FORWARD=yes ;;
         --no-windows) DO_WINDOWS=no ;;
         --yes | -y) ASSUME_YES=yes ;;
         --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --docker-state)
-            fail "setup no longer sets session defaults; after setup use ./asd-dev config (e.g. ./asd-dev config --mem 32G)." ;;
+            fail "setup no longer sets session defaults; after setup use ./asd-dev config set (e.g. ./asd-dev config set --mem 32G)." ;;
         -h | --help) usage; exit 0 ;;
         *) usage >&2; fail "unknown option '$1'" ;;
     esac
@@ -468,7 +470,7 @@ main() {
     # Accept "Name" and a pasted "name@wato-login1.ext.watonomous.ca".
     CLUSTER_USER=$(printf '%s' "$CLUSTER_USER" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
     CLUSTER_USER=${CLUSTER_USER%%@*}
-    [[ -n $CLUSTER_USER ]] || fail "a cluster username is required."
+    [[ -n $CLUSTER_USER ]] || fail "a cluster username is required." "Pass it with --user NAME: the Username under Compute Cluster in your WATcloud profile."
     [[ $CLUSTER_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] ||
         fail "'$CLUSTER_USER' is not a valid cluster username (lowercase letters, digits, - and _)."
 
@@ -630,7 +632,7 @@ main() {
     # --- write this side's ssh config
     step "Writing the ssh config"
     # A RemoteCommand for all hosts would clash with the commands VS Code and the ProxyCommand run.
-    if [[ -f $config ]] && ssh -n -F "$config" -G asd-dev-session 2>/dev/null | grep -qi '^remotecommand '; then
+    if [[ -f $config ]] && ssh -n -F "$config" -G asd-dev-session 2>/dev/null | grep -i '^remotecommand ' >/dev/null; then
         warn "$config sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none' to override it."
         RC_NONE=$'\n    RemoteCommand none'
     fi
@@ -659,7 +661,11 @@ main() {
     check_vscode "$config"
 
     step "Done"
-    ok "Start a session: $REPO_DIR/asd-dev start   (it waits for the job and then opens VS Code)"
+    if [[ $ENV_KIND == wsl ]]; then
+        ok "Start a session: $REPO_DIR/asd-dev start   (it waits until the job runs)"
+    else
+        ok "Start a session: $REPO_DIR/asd-dev start   (it waits for the job and then opens VS Code)"
+    fi
     ok "Then, or any time it runs: VS Code > Remote Explorer > SSH > asd-dev-session > Connect."
     info "It ends at its time limit, or with: ./asd-dev stop (or asd-dev stop in the session's terminal)."
     info "Other commands: ./asd-dev status | config | logs     (terminal: ssh asd-dev-session)"
@@ -703,12 +709,11 @@ setup_windows_side() {
     esac
     write_known_hosts "$wknown"
     RC_NONE=""
-    if [[ -f $wconfig ]] && ssh -n -F "$wconfig" -G asd-dev-session 2>/dev/null | grep -qi '^remotecommand '; then
+    if [[ -f $wconfig ]] && ssh -n -F "$wconfig" -G asd-dev-session 2>/dev/null | grep -i '^remotecommand ' >/dev/null; then
         warn "$(native_path "$wconfig" windows) sets RemoteCommand for all hosts; the asd-dev hosts get 'RemoteCommand none'."
         RC_NONE=$'\n    RemoteCommand none'
     fi
     install_block "$wconfig" "$(make_block "$(native_path "$wkey" windows)" "$(native_path "$wknown" windows)" "")"
-    ok "  Windows: $(native_path "$wconfig" windows) now has the asd-dev entries"
 }
 
 check_vscode() {

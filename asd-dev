@@ -6,6 +6,7 @@ set -o errexit -o nounset -o pipefail
 
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SSH_ARGS=()
+START_NAME_ARG="" # " --name NAME" for the Ctrl-C hint of start
 if [[ -n ${ASD_DEV_SSH_CONFIG:-} ]]; then SSH_ARGS+=(-F "$ASD_DEV_SSH_CONFIG"); fi
 
 usage() {
@@ -16,14 +17,17 @@ Usage: ./asd-dev COMMAND [args]
                           options are sbatch's: --cpus-per-task/-c N --mem 16G --time/-t 6:00:00
                           --gres tmpdisk:MiB,shard:MiB --gpus/-G N --partition/-p NAME
                           --nodelist/-w NODES --exclude/-x NODES; also --docker-state yes|no,
+                          --reset-docker-state (set the saved docker state aside),
                           --no-code (do not open VS Code), --folder PATH
   code [--name NAME] [--folder PATH]  open VS Code in a running session
   add --name NAME         add the host asd-dev-session-NAME for a named session (start does it too)
-  stop [--name NAME] [--now]  stop a session (--all: every session)
+  stop [--name NAME] [--now]  stop a session (--all: every session; --job ID: one job)
   status [--name NAME]    list your sessions
-  logs [--name NAME] [-f] show a session's log
-  config [options]        show or change your session defaults (the options of start;
-                          --unset OPTION removes one), e.g. config --gres tmpdisk:40960
+  logs [--name NAME] [-f] show a session's log (--job ID: that job's)
+  version                 show the version of the cluster helper
+  config                  show your session defaults
+  config set [options]    change them (the options of start), e.g. config set --gres tmpdisk:40960
+  config unset OPTION...  remove them (back to the built-in default), e.g. config unset mem
   ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run ./setup.sh
 
@@ -34,9 +38,10 @@ EOF
 }
 
 # The helper path from the session host's ProxyCommand (setup's --cluster-dir can change it).
+# Readers of "ssh -G" read all of it: an early exit can SIGPIPE ssh, which pipefail turns into an exit.
 helper_path() {
     ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null |
-        awk '$1 == "proxycommand" { for (i = 2; i <= NF; i++) if ($i ~ /\/bin\/asd-dev$/) { print $i; exit } }'
+        awk '$1 == "proxycommand" && !found { for (i = 2; i <= NF; i++) if ($i ~ /\/bin\/asd-dev$/) { print $i; found = 1; break } }'
 }
 
 remote() { # runs the cluster helper with the given arguments
@@ -45,7 +50,10 @@ remote() { # runs the cluster helper with the given arguments
     # --from tells the helper to print command hints in this wrapper's form (./asd-dev ...).
     cmd="${cmd:-.asd-dev/bin/asd-dev} --from=unix"
     for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
+    # Ctrl-C ends only this ssh; the helper on the login node notices and stops by itself.
+    trap 'echo >&2; exit 130' INT
     ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T asd-dev-login "$cmd" || rc=$?
+    trap - INT
     if ((rc == 255)); then
         echo "asd-dev: ssh to the login node failed (see above). Timed out? Off campus you need the UW VPN." >&2
         echo "         Permission denied or an unknown host? Run ./setup.sh again." >&2
@@ -56,12 +64,14 @@ remote() { # runs the cluster helper with the given arguments
 unexpected() { echo "asd-dev: ERROR: unexpected argument '$1'; to name a session use --name $1" >&2; exit 1; }
 need_value() { (($# >= 2)) || { echo "asd-dev: ERROR: $1 needs a value" >&2; exit 1; }; } # need_value "$@"
 
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 alias_for() { if [[ -z $1 || $1 == default ]]; then printf 'asd-dev-session'; else printf 'asd-dev-session-%s' "$1"; fi; }
 
 open_code() { # open_code HOST_ALIAS FOLDER
     local alias=$1 folder=$2 user
     if [[ -z $folder ]]; then
-        user=$(ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "$alias" 2>/dev/null | awk '$1 == "user" { print $2; exit }')
+        user=$(ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "$alias" 2>/dev/null | awk '$1 == "user" && !found { print $2; found = 1 }')
         folder="/home/$user"
     fi
     local uri="vscode-remote://ssh-remote+$alias$folder"
@@ -82,12 +92,17 @@ open_code() { # open_code HOST_ALIAS FOLDER
 # A named session needs its own host entry before ssh or VS Code can reach it.
 ensure_host() { # ensure_host NAME
     # Entries from before the per-session layout pass %h, which a crafted host name could abuse.
-    if ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null | grep -qE "^proxycommand .*asd-dev proxy ('%h'|%h)"; then
+    if ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G asd-dev-session 2>/dev/null | grep -E "^proxycommand .*asd-dev proxy ('%h'|%h)" >/dev/null; then
         echo "asd-dev: your ssh config has asd-dev entries from an earlier version; run ./setup.sh again (it keeps your settings)." >&2
         exit 1
     fi
     [[ -n $1 && $1 != default ]] || return 0
-    if ! ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "asd-dev-session-$1" 2>/dev/null | grep -q '^proxycommand '; then
+    if [[ ! $1 =~ ^[a-z0-9][a-z0-9_-]{0,19}$ ]]; then
+        echo "asd-dev: ERROR: invalid session name '$1'" >&2
+        echo "         Use up to 20 lowercase letters, digits, '-' or '_'." >&2
+        exit 1
+    fi
+    if ! ssh -n ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} -T -G "asd-dev-session-$1" 2>/dev/null | grep '^proxycommand ' >/dev/null; then
         local cfg=()
         [[ -n ${ASD_DEV_SSH_CONFIG:-} ]] && cfg=(--ssh-config "$ASD_DEV_SSH_CONFIG")
         "$REPO_DIR/setup.sh" --add-session "$1" ${cfg[@]+"${cfg[@]}"} >&2
@@ -101,15 +116,19 @@ cmd_start() {
             --no-code) no_code=yes ;;
             --folder) need_value "$@"; folder=$2; shift ;;
             --folder=*) folder=${1#*=} ;;
-            --name) need_value "$@"; name=$2; args+=("$1" "$2"); shift ;;
-            --name=*) name=${1#*=}; args+=("$1") ;;
+            --name) need_value "$@"; name=$(lower "$2"); args+=(--name "$name"); shift ;;
+            --name=*) name=$(lower "${1#*=}"); args+=("--name=$name") ;;
             # Session options go to the cluster helper, which checks them.
             *) args+=("$1") ;;
         esac
         shift
     done
     ensure_host "$name"
+    [[ -z $name || $name == default ]] || START_NAME_ARG=" --name $name"
+    # remote runs in a subshell here, so its trap alone would leave this shell to die of the SIGINT.
+    trap 'echo "asd-dev: stopped waiting; the session keeps starting. Check it: ./asd-dev status   cancel it: ./asd-dev stop$START_NAME_ARG" >&2; exit 130' INT
     out=$(remote start ${args[@]+"${args[@]}"}) || exit $?
+    trap - INT
     alias=$(printf '%s\n' "$out" | awk '$1 == "ASD_DEV_READY" { print $2 }' | tail -n1)
     [[ -n $alias ]] || exit 1
     if [[ $no_code == no ]]; then open_code "$alias" "$folder"; fi
@@ -120,8 +139,10 @@ cmd_code() {
     while (($#)); do
         case $1 in
             --folder) need_value "$@"; folder=$2; shift ;;
-            --name) need_value "$@"; name=$2; shift ;;
-            -*) echo "unknown option $1" >&2; exit 1 ;;
+            --folder=*) folder=${1#*=} ;;
+            --name) need_value "$@"; name=$(lower "$2"); shift ;;
+            --name=*) name=$(lower "${1#*=}") ;;
+            -*) echo "asd-dev: ERROR: unknown option '$1'" >&2; exit 1 ;;
             *) unexpected "$1" ;;
         esac
         shift
@@ -132,17 +153,24 @@ cmd_code() {
 
 cmd_ssh() {
     local name=""
-    if [[ ${1:-} == --name ]]; then need_value "$@"; name=$2; shift 2; fi
+    case ${1:-} in
+        --name) need_value "$@"; name=$(lower "$2"); shift 2 ;;
+        --name=*) name=$(lower "${1#*=}"); shift ;;
+    esac
     ensure_host "$name"
     exec ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$(alias_for "$name")" "$@"
 }
 
 cmd_add() {
+    local name=""
     case ${1:-} in
-        --name) need_value "$@"; ensure_host "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ;;
-        "" | -*) usage >&2; exit 1 ;;
+        --name) need_value "$@"; name=$(lower "$2") ;;
+        --name=*) name=$(lower "${1#*=}") ;;
+        "" | -*) ;;
         *) unexpected "$1" ;;
     esac
+    [[ -n $name ]] || { usage >&2; echo "asd-dev: ERROR: use: add --name NAME" >&2; exit 1; }
+    ensure_host "$name"
 }
 
 main() {
@@ -154,9 +182,10 @@ main() {
         ssh | shell) cmd_ssh "$@" ;;
         add) cmd_add "$@" ;;
         stop | status | logs | log | config | version) remote "$cmd" "$@" ;;
+        --version) remote version ;;
         setup) exec "$REPO_DIR/setup.sh" "$@" ;;
         help | -h | --help) usage ;;
-        *) usage >&2; exit 1 ;;
+        *) usage >&2; echo "asd-dev: ERROR: unknown command '$cmd'" >&2; exit 1 ;;
     esac
 }
 

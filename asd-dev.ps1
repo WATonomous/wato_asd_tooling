@@ -18,15 +18,17 @@ Usage: .\asd-dev.cmd COMMAND [args]
                           options are sbatch's: --cpus-per-task/-c N --mem 16G --time/-t 6:00:00
                           --gres tmpdisk:MiB,shard:MiB --gpus/-G N --partition/-p NAME
                           --nodelist/-w NODES --exclude/-x NODES; also --docker-state yes|no,
+                          --reset-docker-state (set the saved docker state aside),
                           --no-code (do not open VS Code), --folder PATH
-                          (quote a value with commas: --gres "tmpdisk:40960,shard:8192")
   code [--name NAME] [--folder PATH]  open VS Code in a running session
   add --name NAME         add the host asd-dev-session-NAME for a named session (start does it too)
-  stop [--name NAME] [--now]  stop a session (--all: every session)
+  stop [--name NAME] [--now]  stop a session (--all: every session; --job ID: one job)
   status [--name NAME]    list your sessions
-  logs [--name NAME] [-f] show a session's log
-  config [options]        show or change your session defaults (the options of start;
-                          --unset OPTION removes one), e.g. config --gres tmpdisk:40960
+  logs [--name NAME] [-f] show a session's log (--job ID: that job's)
+  version                 show the version of the cluster helper
+  config                  show your session defaults
+  config set [options]    change them (the options of start), e.g. config set --gres tmpdisk:40960
+  config unset OPTION...  remove them (back to the built-in default), e.g. config unset mem
   ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run setup
 
@@ -71,6 +73,11 @@ function Ensure-Host([string]$name) {
         exit 1
     }
     if (-not $name -or $name -eq 'default') { return }
+    if ($name -cnotmatch '^[a-z0-9][a-z0-9_-]{0,19}$') {
+        [Console]::Error.WriteLine("asd-dev: ERROR: invalid session name '$name'")
+        [Console]::Error.WriteLine("         Use up to 20 lowercase letters, digits, '-' or '_'.")
+        exit 1
+    }
     $ErrorActionPreference = 'Continue'
     try { $pc = & ssh.exe -n @SshArgs -T -G "asd-dev-session-$name" 2>$null | Where-Object { $_ -match '^proxycommand ' } }
     finally { $ErrorActionPreference = $old }
@@ -121,12 +128,12 @@ switch ($cmd) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
             elseif ($rest[$i] -eq '--folder') { $folder = Get-Value $rest $i; $i++ }
             elseif ($rest[$i].StartsWith('--folder=')) { $folder = $rest[$i].Substring(9) }
-            elseif ($rest[$i] -eq '--name') { $name = Get-Value $rest $i; $words += $rest[$i]; $words += $name; $i++ }
-            elseif ($rest[$i].StartsWith('--name=')) { $name = $rest[$i].Substring(7); $words += $rest[$i] }
+            elseif ($rest[$i] -eq '--name') { $name = (Get-Value $rest $i).ToLowerInvariant(); $words += '--name'; $words += $name; $i++ }
+            elseif ($rest[$i].StartsWith('--name=')) { $name = $rest[$i].Substring(7).ToLowerInvariant(); $words += "--name=$name" }
             # Session options go to the cluster helper, which checks them.
             else { $words += $rest[$i] }
         }
-        Ensure-Host $name.ToLowerInvariant()
+        Ensure-Host $name
         # stdout carries only the "ASD_DEV_READY <alias> <job>" line; messages go to stderr (the console).
         $out = @(Invoke-Remote $words)
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -138,8 +145,10 @@ switch ($cmd) {
         $name = ''; $folder = ''
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq '--folder') { $folder = Get-Value $rest $i; $i++ }
-            elseif ($rest[$i] -eq '--name') { $name = Get-Value $rest $i; $i++ }
-            elseif ($rest[$i].StartsWith('-')) { Write-Host "unknown option $($rest[$i])"; exit 1 }
+            elseif ($rest[$i].StartsWith('--folder=')) { $folder = $rest[$i].Substring(9) }
+            elseif ($rest[$i] -eq '--name') { $name = (Get-Value $rest $i).ToLowerInvariant(); $i++ }
+            elseif ($rest[$i].StartsWith('--name=')) { $name = $rest[$i].Substring(7).ToLowerInvariant() }
+            elseif ($rest[$i].StartsWith('-')) { [Console]::Error.WriteLine("asd-dev: ERROR: unknown option '$($rest[$i])'"); exit 1 }
             else { Stop-Unexpected $rest[$i] }
         }
         Ensure-Host $name
@@ -147,24 +156,32 @@ switch ($cmd) {
     }
     { $_ -in @('ssh', 'shell') } {
         $name = ''
-        if ($rest.Count -ge 1 -and $rest[0] -eq '--name') { $name = Get-Value $rest 0; $rest = @($rest | Select-Object -Skip 2) }
+        if ($rest.Count -ge 1 -and $rest[0] -eq '--name') { $name = (Get-Value $rest 0).ToLowerInvariant(); $rest = @($rest | Select-Object -Skip 2) }
+        elseif ($rest.Count -ge 1 -and $rest[0].StartsWith('--name=')) { $name = $rest[0].Substring(7).ToLowerInvariant(); $rest = @($rest | Select-Object -Skip 1) }
         Ensure-Host $name
-        & ssh.exe @SshArgs (Get-Alias $name) @rest
+        # With a command and console stdin, ssh.exe sometimes never exits after it; -n avoids that.
+        $noStdin = @()
+        if ($rest.Count -gt 0 -and -not [Console]::IsInputRedirected) { $noStdin = @('-n') }
+        & ssh.exe @SshArgs @noStdin (Get-Alias $name) @rest
         exit $LASTEXITCODE
     }
+    '--version' { Invoke-Remote @('version'); exit $LASTEXITCODE }
     { $_ -in @('stop', 'status', 'logs', 'log', 'config', 'version') } {
         Invoke-Remote (@($cmd) + $rest)
         exit $LASTEXITCODE
     }
     'add' {
-        if ($rest.Count -ge 1 -and $rest[0] -eq '--name') { Ensure-Host (Get-Value $rest 0).ToLowerInvariant() }
+        $name = ''
+        if ($rest.Count -ge 1 -and $rest[0] -eq '--name') { $name = Get-Value $rest 0 }
+        elseif ($rest.Count -ge 1 -and $rest[0].StartsWith('--name=')) { $name = $rest[0].Substring(7) }
         elseif ($rest.Count -ge 1 -and -not $rest[0].StartsWith('-')) { Stop-Unexpected $rest[0] }
-        else { Show-Usage; exit 1 }
+        if (-not $name) { Show-Usage; [Console]::Error.WriteLine('asd-dev: ERROR: use: add --name NAME'); exit 1 }
+        Ensure-Host $name.ToLowerInvariant()
     }
     'setup' {
         & (Join-Path $RepoDir 'setup.ps1') @rest
         exit $LASTEXITCODE
     }
     { $_ -in @('help', '-h', '--help') } { Show-Usage }
-    default { Show-Usage; exit 1 }
+    default { Show-Usage; [Console]::Error.WriteLine("asd-dev: ERROR: unknown command '$cmd'"); exit 1 }
 }

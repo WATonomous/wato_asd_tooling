@@ -49,6 +49,7 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --ssh-config FILE  ssh config file to write (default: %USERPROFILE%\.ssh\config, which VS Code reads)
   --no-agent-forwarding  do not forward your SSH agent into sessions (it is forwarded by default so
                      git over SSH works there; root on the compute node could use it meanwhile)
+  --agent-forwarding  forward it again after --no-agent-forwarding
   --add-session NAME only add the host asd-dev-session-NAME for a named session to the ssh config
                      (.\asd-dev.cmd add --name NAME and .\asd-dev.cmd start --name NAME call this)
   --cluster-dir DIR  install the cluster helper in ~/DIR instead of ~/.asd-dev (for a second,
@@ -56,7 +57,7 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --yes              do not ask questions; use defaults and the values given
   -h, --help         show this help
 
-Session defaults (CPUs, memory, GPUs, /tmp) are set after setup with .\asd-dev.cmd config.
+Session defaults (CPUs, memory, GPUs, /tmp) are set after setup with .\asd-dev.cmd config set.
 '@ | Write-Host
 }
 
@@ -77,6 +78,12 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         'help' { Show-Usage; exit 0 }
     }
     if (-not $needsValue) { continue }
+    if (@('user', 'key', 'login', 'ssh-config', 'cluster-dir', 'add-session') -notcontains $name) {
+        if ($oldSettingNames -contains $name) {
+            Fail 'setup no longer sets session defaults; after setup use .\asd-dev.cmd config set (e.g. .\asd-dev.cmd config set --mem 32G).'
+        }
+        Show-Usage; Fail "unknown option '$a'"
+    }
     if ($i + 1 -ge $args.Count) { Show-Usage; Fail "option $a needs a value" }
     $value = [string]$args[++$i]
     switch ($name) {
@@ -86,12 +93,6 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         'ssh-config' { $ArgConfig = $value }
         'cluster-dir' { $ArgClusterDir = $value }
         'add-session' { $ArgAdd = $value.ToLowerInvariant() }
-        default {
-            if ($oldSettingNames -contains $name) {
-                Fail 'setup no longer sets session defaults; after setup use .\asd-dev.cmd config (e.g. .\asd-dev.cmd config --mem 32G).'
-            }
-            Show-Usage; Fail "unknown option '$a'"
-        }
     }
 }
 
@@ -387,7 +388,7 @@ if (-not $ArgUser) {
 }
 # Accept "Name" and a pasted "name@wato-login1.ext.watonomous.ca".
 $script:ClusterUser = ((Ask 'Cluster username' $defUser) -replace '\s', '' -replace '@.*$', '').ToLowerInvariant()
-if (-not $script:ClusterUser) { Fail 'a cluster username is required.' }
+if (-not $script:ClusterUser) { Fail 'a cluster username is required.' @('Pass it with --user NAME: the Username under Compute Cluster in your WATcloud profile.') }
 if ($script:ClusterUser -cnotmatch '^[a-z_][a-z0-9_-]{0,31}$') {
     Fail "'$($script:ClusterUser)' is not a valid cluster username (lowercase letters, digits, - and _)."
 }
