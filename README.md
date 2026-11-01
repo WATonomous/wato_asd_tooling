@@ -3,18 +3,29 @@
 Work in VS Code on your computer while everything runs in a SLURM job on the WATcloud cluster:
 the job's CPUs, RAM and GPU, your cluster home, and a working `docker`.
 
-## Before you start
+## Prerequisites
 
-- You know your **cluster username**: "Username" under "Compute Cluster" in your
-  [WATcloud profile](https://cloud.watonomous.ca/docs/utilities/profile-editor). It can differ
-  from your WATcloud username.
+- You know your cluster username ("Username" under "Compute Cluster" in your
+  [WATcloud profile](https://cloud.watonomous.ca/docs/utilities/profile-editor)).
 - The SSH key registered in that profile is on this computer (usually `~/.ssh/id_ed25519`).
-- You are on campus or on the
-  [UW VPN](https://uwaterloo.ca/information-systems-technology/services/virtual-private-network-vpn).
+- Your device is on campus network (eduroam) or on the [UW VPN](https://uwaterloo.ca/information-systems-technology/services/virtual-private-network-vpn).
 - [VS Code](https://code.visualstudio.com/) and its
   [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
   extension are installed.
-- You have this repo: `git clone https://github.com/WATonomous/wato_asd_tooling.git` (or the ZIP).
+
+## How it works
+
+The WATcloud cluster is shared, and SLURM decides who gets which compute node. To use resources, you
+submit a job: a request for some CPUs, RAM and maybe a GPU, for a fixed time. SLURM starts the
+job as soon as a node has those resources free. Until then the job waits in the queue, which can
+take minutes or longer when the cluster is busy. The job ends when its time runs out or when you
+cancel it, and its resources go back to everyone else. To learn more about SLURM, check
+[our documentation](https://cloud.watonomous.ca/docs/compute-cluster/slurm).
+
+An ASD session is just a SLURM job set up in a way that VS Code can connect to it and `docker` works within. `./asd-dev start` submits it,
+waits until SLURM starts it, and opens VS Code in it. Everything in that window, terminals and
+`docker` included, runs in the job and uses its resources. The session lasts as long as the job:
+closing VS Code does not end it, and connecting does not start one.
 
 ## Quick start
 
@@ -23,24 +34,22 @@ Run these in a terminal in the `wato_asd_tooling` folder:
 - **macOS, Linux:** as shown.
 - **Windows (PowerShell or Command Prompt):** type `.\setup.cmd` instead of `./setup.sh` and
   `.\asd-dev.cmd` instead of `./asd-dev`.
-- **WSL or Git Bash:** as shown, in that shell. Setup in WSL also sets up Windows, where VS Code
-  runs.
+- **Windows (WSL or Git Bash):** as shown, in that shell. Setup in WSL also writes Windows' SSH
+  config, since VS Code runs on Windows.
 
 1. **Set up once:** `./setup.sh`. It asks for your username and key and checks the login.
    Run it again at any time to change them.
-2. **Start a session:** `./asd-dev start`. It waits for the job and opens VS Code in it.
-   If the cluster is busy, start says why and keeps waiting. Ctrl-C stops waiting but leaves the
-   job queued; `./asd-dev stop` cancels it.
+2. **Start a session:** `./asd-dev start`. It shows why the job is waiting, if it is, and opens
+   VS Code once the job runs (from WSL it can't; connect as in step 3). Ctrl-C stops waiting but
+   leaves the job queued; `./asd-dev stop` cancels it.
 3. **Connect again later:** in VS Code, open **Remote Explorer**, pick **SSH**, and click the
    arrow next to **asd-dev-session**.
 4. **Stop:** `./asd-dev stop`. Otherwise the session ends 5 minutes before its time limit
-   (6 hours by default), to save docker state. Closing VS Code does not stop it.
+   (6 hours by default), to save docker state.
 
 Good to know:
 
-- Connecting never starts a session. Start one first.
 - The first connection installs VS Code's server in your home (about a minute).
-- `./asd-dev start --folder /home/<username>/wato_monorepo` opens that folder directly.
 - On Windows, the first connection asks for the remote platform: choose **Linux**. The question
   can hide behind VS Code's welcome dialog.
 - In a session's terminal the command is just `asd-dev` (for example `asd-dev stop`).
@@ -49,28 +58,30 @@ Good to know:
 
 ## Resources
 
-Use these options once with `start`, or save them as your defaults with `config`:
+Use these options once with `start`, or save them as your defaults with `config set`:
 
 ```bash
-./asd-dev start --gres shard:8192               # 8 GiB slice of a GPU, this session only
-./asd-dev start --gres gpu:rtx_3090:1           # a whole GPU of one type
-./asd-dev config --cpus-per-task 8 --mem 32G    # new defaults for every session
-./asd-dev config --unset mem                    # back to the built-in default
-./asd-dev config                                # show your defaults
+# this session only: 2 CPUs, 8G RAM, 20 GiB /tmp and a whole GPU
+./asd-dev start --cpus-per-task 2 --mem 8G --gres tmpdisk:20480,gpu:1
+
+./asd-dev config set --cpus-per-task 2 --mem 8G    # new defaults for every session
+./asd-dev config unset mem                         # back to the built-in default
+./asd-dev config                                   # show your defaults
 ```
 
 - Defaults: 4 CPUs, 16G RAM, 6 hours, 10 GiB `/tmp`.
+- The preferred way to use a GPU is to use portion of it: `--gres shard:8192` gets 8 GiB of a GPU's
+  memory instead of the whole card. 
+  - `nvidia-smi` still shows the whole card. 
+  - WATcloud currently doesn't enforce GPU limits on slurm jobs in the cluster, so please be mindful of usage
+- For one GPU type: `gpu:rtx_3090:1` or `shard:rtx_3090:8192`.
+  - Types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`.
 - Other options (`--time`, `--gpus`, `--partition`, `--nodelist`, `--exclude`,
   `--docker-state`, ...): see `./asd-dev --help`.
-- `/tmp`, where docker keeps its images, is 10 GiB; ask for more with `--gres tmpdisk:MiB`
-  (`watcloud quota disk` in a session shows its use). **CARLA needs `--gres tmpdisk:40960`**;
-  with a GPU slice: `--gres tmpdisk:40960,shard:8192`.
-- A `--gres` on start replaces the one in your defaults, except that `/tmp` (tmpdisk) is kept
-  unless you name it.
-- In PowerShell, quote a value with commas: `--gres "tmpdisk:40960,shard:8192"`.
-- GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. `nvidia-smi` shows the whole
-  card; nothing stops you using more than your slice, so don't.
-- A running session keeps its resources. To change them, stop it and start again.
+- `/tmp` is per-session scratch disk, where Docker keeps its images
+  - ask for more with `--gres tmpdisk:MiB` (`watcloud quota disk` in a session shows its use). 
+  - **CARLA needs 40GB of tmpdisk**
+- A running session is a slurm job and therefore can't adjust its resource limits at runtime
 
 ## Docker
 
@@ -104,7 +115,7 @@ The monorepo's images on GHCR are private. To pull them, log in once:
 | `./asd-dev stop [--name NAME]` | stop it (`--now`: without saving docker state; `--all`: every session) |
 | `./asd-dev status [--name NAME]` | list your sessions: node, time left, resources |
 | `./asd-dev logs [--name NAME]` | show a session's log (`-f` to follow) |
-| `./asd-dev config [options]` | show or change your defaults (`--unset OPTION` removes one) |
+| `./asd-dev config` | show your defaults (`config set [options]` changes them, `config unset OPTION` removes one) |
 | `./asd-dev code [--name NAME]` | open VS Code in a running session |
 | `./asd-dev add --name NAME` | add the host for a named session to your SSH config |
 | `./asd-dev ssh [--name NAME] [command]` | open a terminal in a session (same as `ssh asd-dev-session`) |
@@ -123,7 +134,7 @@ VS Code often says only "An unknown error occurred". The reason is in View > Out
 | `held back by your per-user limit` | Your other jobs use your share. Stop some, or ask for less. |
 | `Connection timed out` | You are off campus without the UW VPN. |
 | `Permission denied (publickey)`, `Host key verification failed`, `.asd-dev/bin/asd-dev: No such file` | Run setup again (it checks your username and key). |
-| `Could not resolve hostname asd-dev-session-...` | Run `./asd-dev add --name NAME`. |
+| `Could not resolve hostname asd-dev-session-...` | Type the name in lowercase (`asd-dev-session-carla`, not `-Carla`). Otherwise run `./asd-dev add --name NAME`. |
 | `Disk quota exceeded` in your home | Delete old VS Code versions in `~/.vscode-server` (about 1.3 GB each). |
 | `Cannot connect to the Docker daemon` | Docker is still starting. Wait, or see `./asd-dev logs`. |
 | `no space left on device` (docker) | `/tmp` is full. `docker system prune`, or start with a bigger `--gres tmpdisk:...`. |
@@ -134,8 +145,13 @@ If the saved docker state cannot be restored:
 - Your terminal says what to run: a bigger `--gres tmpdisk:...`, or
   `./asd-dev start --reset-docker-state` to set a damaged file aside and start fresh.
 
-To undo setup, delete the `# >>> asd-dev` ... `# <<< asd-dev` lines from your SSH config and the
-`~/.asd-dev` folder in your cluster home.
+To undo setup:
+
+- Delete the `# >>> asd-dev` ... `# <<< asd-dev` lines from your SSH config (`~/.ssh/config`; on
+  Windows `%USERPROFILE%\.ssh\config`, which setup in WSL writes too).
+- In the same `.ssh` folder, delete `asd-dev_known_hosts`, the `config.asd-dev-backup-*` files
+  and, after setup in WSL, the key copy `asd-dev_<key name>` (and its `.pub`).
+- Delete the `~/.asd-dev` folder in your cluster home.
 
 ## Coming from the old scripts
 
