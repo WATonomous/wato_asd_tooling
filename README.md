@@ -162,3 +162,17 @@ To undo setup:
   `git checkout -- session_config.sh` first.
 - Setup offers to comment out the old `asd-dev-session` entry in your SSH config.
 - Your saved docker state carries over.
+
+## Trying v2, and going back
+
+- Stop any session the old scripts started before you start a v2 session (`squeue --me` on the
+  login node lists it as `wato_slurm_dev`; stop it with `scancel <job id>` and wait until
+  `squeue --me` no longer lists it). v2's default session
+  saves docker images to the same file as the old scripts, so with
+  both running each saves over the other's images. `./asd-dev start` warns when it sees an old
+  session, but it does not stop it.
+- After setup, VS Code's `asd-dev-session` reaches only v2 sessions, even if you kept your old
+  entry: v2's entries come first in your SSH config.
+- To go back to the old scripts, undo setup (see the end of Troubleshooting). If setup commented
+  out your old entry, also remove `# [disabled by asd-dev setup] ` from the start of its lines.
+  Then switch this folder back with `git checkout main`.

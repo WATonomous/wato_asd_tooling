@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.2.0-rc.5
+ASD_DEV_VERSION=2.2.0-rc.6
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=26
+ASD_DEV_SERIAL=27
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -530,11 +530,25 @@ refuse_existing() { # dies for the session job in J_*
         "To restart it with other settings: $(hint "$(with_name stop "$NAME")"), then start it."
 }
 
+# Jobs of the old scripts (wato_slurm_dev) save docker state to the default session's file
+# every 15 minutes, so the two would save over each other's images.
+warn_old_session() {
+    [[ $NAME == default && $INSTALL_ID == .asd-dev && ${CFG[docker-state]} == yes ]] || return 0
+    local ids stop
+    ids=$(squeue --me -h -n wato_slurm_dev -o %i 2>/dev/null </dev/null | paste -sd' ' -) || return 0
+    [[ -n $ids ]] || return 0
+    stop="scancel $ids"
+    [[ $FROM == unix || $FROM == windows ]] && stop="ssh asd-dev-login scancel $ids"
+    say "WARNING: a session of the old scripts is running (job $ids). It saves docker images to the same file as this session, so each would save over the other's."
+    printf '         %s\n' "Stop it with: $stop   and wait until it is gone from the queue. Or start a named session instead: $(hint "start --name NAME")" >&2
+}
+
 cmd_start() {
     parse_session_flags "$@"
     load_config
     if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
     if find_session_job "$NAME"; then refuse_existing; fi
+    warn_old_session
     mkdir -p "$LOGS" "$SESSIONS"
     [[ -f $HOSTKEY ]] || die "the session host key $HOSTKEY is missing." "Run the setup script on your laptop again."
     # shellcheck disable=SC2054 # the comma belongs to --export's value
