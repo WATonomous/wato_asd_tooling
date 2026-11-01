@@ -33,8 +33,8 @@ Run these in a terminal in the `wato_asd_tooling` folder:
    job queued; `./asd-dev stop` cancels it.
 3. **Connect again later:** in VS Code, open **Remote Explorer**, pick **SSH**, and click the
    arrow next to **asd-dev-session**.
-4. **Stop:** `./asd-dev stop`. Otherwise the session ends at its time limit (6 hours by
-   default), 5 minutes early to save docker state. Closing VS Code does not stop it.
+4. **Stop:** `./asd-dev stop`. Otherwise the session ends 5 minutes before its time limit
+   (6 hours by default), to save docker state. Closing VS Code does not stop it.
 
 Good to know:
 
@@ -75,7 +75,7 @@ Use these options once with `start`, or save them as your defaults with `config`
 ## Docker
 
 - `docker` works in the session's terminals. The Docker extension and Dev Containers' **Attach
-  to Running Container** should work too (checked from the command line, not in VS Code).
+  to Running Container** should work too.
 - A session saves your images and containers when it ends (stop or time limit, not
   `stop --now`); the next session restores them.
 - `watod build` should still work without a GHCR login (it builds from the public base image),
