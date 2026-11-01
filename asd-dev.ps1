@@ -19,6 +19,7 @@ Usage: .\asd-dev.cmd COMMAND [args]
                           --gres tmpdisk:MiB,shard:MiB --gpus/-G N --partition/-p NAME
                           --nodelist/-w NODES --exclude/-x NODES; also --docker-state yes|no,
                           --no-code (do not open VS Code), --folder PATH
+                          (quote a value with commas: --gres "tmpdisk:40960,shard:8192")
   code [--name NAME] [--folder PATH]  open VS Code in a running session
   add --name NAME         add the host asd-dev-session-NAME for a named session (start does it too)
   stop [--name NAME] [--now]  stop a session (--all: every session)

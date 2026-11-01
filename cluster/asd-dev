@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.2.0-rc.1
+ASD_DEV_VERSION=2.2.0-rc.2
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=22
+ASD_DEV_SERIAL=23
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -116,7 +116,20 @@ valid_value() { # valid_value KEY VALUE
     esac
 }
 
+# Prints --gres value $2 with the tmpdisk item of $1 added when $2 names no tmpdisk.
+gres_keeping_tmpdisk() {
+    local items item
+    if [[ ,$2, == *,tmpdisk,* || ,$2, == *,tmpdisk:* ]]; then printf '%s' "$2"; return; fi
+    IFS=, read -ra items <<<"$1"
+    for item in ${items[@]+"${items[@]}"}; do
+        if [[ $item == tmpdisk || $item == tmpdisk:* ]]; then printf '%s,%s' "$item" "$2"; return; fi
+    done
+    printf '%s' "$2"
+}
+
 # Applies "key=value" words (key = long option name) to CFG. $1 is a label for error messages.
+# A --gres from the command line replaces the saved one but keeps its tmpdisk (/tmp) unless it
+# names one, so "start --gres shard:8192" does not shrink a saved tmpdisk:40960.
 apply_settings() {
     local origin=$1 kv key value
     shift
@@ -124,6 +137,7 @@ apply_settings() {
         key=${kv%%=*}
         value=${kv#*=}
         valid_value "$key" "$value" || die "$origin: invalid value for --$key: '$value'" "$SETTING_EXAMPLES"
+        if [[ $key == gres && $origin == "command line" ]]; then value=$(gres_keeping_tmpdisk "${CFG[gres]}" "$value"); fi
         CFG[$key]=$value
     done
 }
@@ -493,7 +507,12 @@ parse_session_flags() {
                     die "unexpected argument '$word'" "$OPTIONS_LINE"
                 die "'$word' is the old form: asd-dev now takes sbatch's own options. Use $hint_text."
                 ;;
-            *) die "unexpected argument '$word'; to name a session use --name $word" ;;
+            *)
+                if [[ $word =~ ^[a-z][a-z0-9_]*:[A-Za-z0-9_:-]+$ ]]; then
+                    die "unexpected argument '$word'." "If it belongs to --gres, join the items with commas; in PowerShell quote the value: --gres \"tmpdisk:40960,shard:8192\""
+                fi
+                die "unexpected argument '$word'; to name a session use --name $word"
+                ;;
         esac
         shift
     done
@@ -691,7 +710,7 @@ cmd_config() {
         if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
         local kv k
         for k in ${FLAG_UNSET[@]+"${FLAG_UNSET[@]}"}; do unset "FILE_SET[$k]"; done
-        for kv in ${FLAG_SETTINGS[@]+"${FLAG_SETTINGS[@]}"}; do FILE_SET[${kv%%=*}]=${kv#*=}; done
+        for kv in ${FLAG_SETTINGS[@]+"${FLAG_SETTINGS[@]}"}; do FILE_SET[${kv%%=*}]=${CFG[${kv%%=*}]}; done
         write_config
         load_config
         say "saved to $CONFIG"
@@ -1163,7 +1182,8 @@ session's terminal as asd-dev; on a login node as ~/$INSTALL_ID/bin/asd-dev.
 Session options, sbatch's own (one-off with start; saved as defaults with config):
   $SESSION_OPTIONS
   e.g. --gres tmpdisk:40960 (CARLA), --gres shard:8192 (8 GiB slice of a GPU), --gres gpu:rtx_3090:1
-  A --gres without tmpdisk gets tmpdisk:$TMPDISK_DEFAULT (the job's /tmp, where docker keeps images).
+  A --gres replaces the saved one but keeps its tmpdisk (the job's /tmp) unless it names one;
+  without any, tmpdisk:$TMPDISK_DEFAULT. In PowerShell quote a --gres with commas.
 start only: --reset-docker-state (move the saved docker state aside and start empty)
 
 Connecting VS Code to asd-dev-session[-NAME] only connects; it never starts a session.
