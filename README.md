@@ -18,21 +18,29 @@ the job's CPUs, RAM and GPU, your cluster home, and a working `docker`.
 
 ## Quick start
 
-Run these in a terminal in the `wato_asd_tooling` folder. **On Windows**, type `.\setup.cmd`
-instead of `./setup.sh` and `.\asd-dev.cmd` instead of `./asd-dev`. With WSL or Git Bash, use
-`./setup.sh` there (setup in WSL also sets up Windows, where VS Code runs).
+Run these in a terminal in the `wato_asd_tooling` folder:
+
+- **macOS, Linux:** as shown.
+- **Windows (PowerShell or Command Prompt):** type `.\setup.cmd` instead of `./setup.sh` and
+  `.\asd-dev.cmd` instead of `./asd-dev`.
+- **WSL or Git Bash:** as shown, in that shell. Setup in WSL also sets up Windows, where VS Code
+  runs.
 
 1. **Set up once:** `./setup.sh`. It asks for your username and key and checks the login.
    Run it again at any time to change them.
 2. **Start a session:** `./asd-dev start`. It waits for the job and opens VS Code in it.
+   If the cluster is busy, start says why and keeps waiting. Ctrl-C stops waiting but leaves the
+   job queued; `./asd-dev stop` cancels it.
 3. **Connect again later:** in VS Code, open **Remote Explorer**, pick **SSH**, and click the
    arrow next to **asd-dev-session**.
 4. **Stop:** `./asd-dev stop`. Otherwise the session ends at its time limit (6 hours by
-   default). Closing VS Code does not stop it.
+   default), 5 minutes early to save docker state. Closing VS Code does not stop it.
 
 Good to know:
 
 - Connecting never starts a session. Start one first.
+- The first connection installs VS Code's server in your home (about a minute).
+- `./asd-dev start --folder /home/<username>/wato_monorepo` opens that folder directly.
 - On Windows, the first connection asks for the remote platform: choose **Linux**. The question
   can hide behind VS Code's welcome dialog.
 - In a session's terminal the command is just `asd-dev` (for example `asd-dev stop`).
@@ -41,8 +49,7 @@ Good to know:
 
 ## Resources
 
-Options are SLURM's own (`sbatch`). Use them once with `start`, or save them as your defaults
-with `config`:
+Use these options once with `start`, or save them as your defaults with `config`:
 
 ```bash
 ./asd-dev start --gres shard:8192               # 8 GiB slice of a GPU, this session only
@@ -52,25 +59,34 @@ with `config`:
 ./asd-dev config                                # show your defaults
 ```
 
-- Defaults: `--cpus-per-task 4 --mem 16G --time 6:00:00 --gres tmpdisk:10240`. Also accepted:
-  `-c`, `-t`, `--gpus`/`-G`, `--partition`/`-p`, `--nodelist`/`-w`, `--exclude`/`-x`, and
-  `--docker-state yes|no`.
-- `/tmp`, where docker keeps images, is the `tmpdisk` GRES (10 GiB unless your `--gres` names it).
-  Check its use with `watcloud quota disk` in a session. **CARLA needs `--gres tmpdisk:40960`**;
+- Defaults: 4 CPUs, 16G RAM, 6 hours, 10 GiB `/tmp`.
+- Other options (`--time`, `--gpus`, `--partition`, `--nodelist`, `--exclude`,
+  `--docker-state`, ...): see `./asd-dev --help`.
+- `/tmp`, where docker keeps its images, is 10 GiB; ask for more with `--gres tmpdisk:MiB`
+  (`watcloud quota disk` in a session shows its use). **CARLA needs `--gres tmpdisk:40960`**;
   with a GPU slice: `--gres tmpdisk:40960,shard:8192`.
-- GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. A slice is a reservation, not a
-  limit: stay within what you asked for.
+- A `--gres` on start replaces the one in your defaults, except that `/tmp` (tmpdisk) is kept
+  unless you name it.
+- In PowerShell, quote a value with commas: `--gres "tmpdisk:40960,shard:8192"`.
+- GPU types: `rtx_2080_ti`, `rtx_3090`, `rtx_4090`, `gtx_1080`. `nvidia-smi` shows the whole
+  card; nothing stops you using more than your slice, so don't.
 - A running session keeps its resources. To change them, stop it and start again.
 
 ## Docker
 
-- `docker` works in the session's terminals, the Docker extension and Dev Containers' **Attach
-  to Running Container**.
-- Stopping saves your images and containers; the next session restores them.
-- The monorepo's images on GHCR are private. To pull them, log in once in a session with a GitHub
-  classic token that has `read:packages` (`write:packages` is only needed to push):
-  `docker login ghcr.io -u <your GitHub username> --password-stdin`, paste the token, Enter,
-  Ctrl-D. Without it, `watod build` still works, only slower.
+- `docker` works in the session's terminals. The Docker extension and Dev Containers' **Attach
+  to Running Container** should work too (checked from the command line, not in VS Code).
+- A session saves your images and containers when it ends (stop or time limit, not
+  `stop --now`); the next session restores them.
+- `watod build` should still work without a GHCR login (it builds from the public base image),
+  only slower.
+
+The monorepo's images on GHCR are private. To pull them, log in once:
+
+1. Create a GitHub classic personal access token with `read:packages` (`write:packages` only if
+   you push).
+2. In a session's terminal: `docker login ghcr.io -u <your GitHub username>`.
+3. Paste the token at the Password prompt (it isn't shown). Later sessions stay logged in.
 
 ## More than one session
 
@@ -114,12 +130,9 @@ VS Code often says only "An unknown error occurred". The reason is in View > Out
 
 If the saved docker state cannot be restored:
 
-- The session starts with empty docker and keeps the saved file. Saving is off for that session.
-- Your terminal says why and what to run.
-- Not enough `/tmp`: stop, then start with the bigger `--gres tmpdisk:...` it suggests.
-- Damaged: stop, then `./asd-dev start --reset-docker-state`. That moves the file aside and starts
-  fresh. After two failed restores in a row this happens by itself.
-- `--docker-state no` runs a session that neither restores nor saves.
+- Docker starts empty, the saved file is kept, and this session does not save over it.
+- Your terminal says what to run: a bigger `--gres tmpdisk:...`, or
+  `./asd-dev start --reset-docker-state` to set a damaged file aside and start fresh.
 
 To undo setup, delete the `# >>> asd-dev` ... `# <<< asd-dev` lines from your SSH config and the
 `~/.asd-dev` folder in your cluster home.
