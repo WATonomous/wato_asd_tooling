@@ -52,20 +52,13 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --yes              do not ask questions; use defaults and the values given
   -h, --help         show this help
 
-Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the values given change):
-  --cpus N --mem 16G --time 6:00:00 --tmpdisk MiB --vram MiB --gpus N --gpu-type TYPE
-  --docker-state yes|no
+Session defaults (CPUs, memory, GPUs, /tmp) are set after setup with ./asd-dev config.
 EOF
 }
 
 # ---------------------------------------------------------------- arguments
 
 ARG_USER="" ARG_KEY="" ARG_LOGIN="" ARG_CONFIG="" ARG_CLUSTER_DIR="" ARG_FORWARD="" ARG_ADD="" ASSUME_YES=no DO_WINDOWS=yes
-CLUSTER_SETTINGS=()
-add_setting() {
-    [[ $2 =~ ^[A-Za-z0-9_:.-]*$ ]] || fail "invalid value for --$1: '$2'"
-    CLUSTER_SETTINGS+=("$1=$2")
-}
 while (($#)); do
     case $1 in
         --user) ARG_USER=${2:?--user needs a value}; shift ;;
@@ -79,11 +72,7 @@ while (($#)); do
         --no-windows) DO_WINDOWS=no ;;
         --yes | -y) ASSUME_YES=yes ;;
         --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --docker-state)
-            key=${1#--}
-            key=$(printf '%s' "$key" | tr '-' '_')
-            add_setting "$key" "${2:?$1 needs a value}"
-            shift
-            ;;
+            fail "setup no longer sets session defaults; after setup use ./asd-dev config (e.g. ./asd-dev config --mem 32G)." ;;
         -h | --help) usage; exit 0 ;;
         *) usage >&2; fail "unknown option '$1'" ;;
     esac
@@ -620,11 +609,9 @@ main() {
 
     # --- install the cluster helper
     step "Installing the session helper in your cluster home (~/$CLUSTER_DIR)"
-    local settings_str="" s
-    for s in ${CLUSTER_SETTINGS[@]+"${CLUSTER_SETTINGS[@]}"}; do settings_str+=" $s"; done
     set +o errexit
     out=$(ssh -F "$TMPCFG" -T asd-dev-login \
-        "mkdir -p $CLUSTER_DIR/tmp && tr -d '\\r' > $CLUSTER_DIR/tmp/asd-dev.new && bash $CLUSTER_DIR/tmp/asd-dev.new --from=unix install$settings_str" \
+        "mkdir -p $CLUSTER_DIR/tmp && tr -d '\\r' > $CLUSTER_DIR/tmp/asd-dev.new && bash $CLUSTER_DIR/tmp/asd-dev.new --from=unix install" \
         <"$HELPER" 2>&1)
     rc=$?
     set -o errexit

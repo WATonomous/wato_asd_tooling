@@ -56,17 +56,14 @@ a dev session that runs inside a WATcloud SLURM job. Safe to run again at any ti
   --yes              do not ask questions; use defaults and the values given
   -h, --help         show this help
 
-Defaults for new sessions (stored on the cluster in ~/.asd-dev/config; only the values given change):
-  --cpus N --mem 16G --time 6:00:00 --tmpdisk MiB --vram MiB --gpus N --gpu-type TYPE
-  --docker-state yes|no
+Session defaults (CPUs, memory, GPUs, /tmp) are set after setup with .\asd-dev.cmd config.
 '@ | Write-Host
 }
 
 # ---------------------------------------------------------------- arguments
 
 $ArgUser = ''; $ArgKey = ''; $ArgLogin = ''; $ArgConfig = ''; $ArgClusterDir = ''; $ArgForward = ''; $ArgAdd = ''; $AssumeYes = $false
-$ClusterSettings = @()
-$settingNames = @('cpus', 'mem', 'time', 'tmpdisk', 'vram', 'gpus', 'gpu-type', 'docker-state')
+$oldSettingNames = @('cpus', 'mem', 'time', 'tmpdisk', 'vram', 'gpus', 'gpu-type', 'docker-state')
 for ($i = 0; $i -lt $args.Count; $i++) {
     $a = [string]$args[$i]
     $name = $a.TrimStart('-').ToLowerInvariant()
@@ -90,9 +87,10 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         'cluster-dir' { $ArgClusterDir = $value }
         'add-session' { $ArgAdd = $value.ToLowerInvariant() }
         default {
-            if ($settingNames -notcontains $name) { Show-Usage; Fail "unknown option '$a'" }
-            if ($value -notmatch '^[A-Za-z0-9_:.-]*$') { Fail "invalid value for ${a}: '$value'" }
-            $ClusterSettings += ('{0}={1}' -f $name.Replace('-', '_'), $value)
+            if ($oldSettingNames -contains $name) {
+                Fail 'setup no longer sets session defaults; after setup use .\asd-dev.cmd config (e.g. .\asd-dev.cmd config --mem 32G).'
+            }
+            Show-Usage; Fail "unknown option '$a'"
         }
     }
 }
@@ -499,10 +497,8 @@ try {
     try { $r = Invoke-Native $Scp @('-q', '-F', $tmpCfg, 'cluster/asd-dev', 'asd-dev-login:.asd-dev-upload') }
     finally { Pop-Location }
     if ($r.Code -ne 0) { Fail "copying the helper to the cluster failed (exit code $($r.Code)):" @($r.Text) }
-    $settings = ''
-    foreach ($s in $ClusterSettings) { $settings += " $s" }
     $d = $script:ClusterDir
-    $remote = "mkdir -p $d/tmp && tr -d '\r' < .asd-dev-upload > $d/tmp/asd-dev.new && rm -f .asd-dev-upload && bash $d/tmp/asd-dev.new --from=windows install$settings"
+    $remote = "mkdir -p $d/tmp && tr -d '\r' < .asd-dev-upload > $d/tmp/asd-dev.new && rm -f .asd-dev-upload && bash $d/tmp/asd-dev.new --from=windows install"
     $r = Invoke-Native $Ssh @('-n', '-F', $tmpCfg, '-T', 'asd-dev-login', $remote)
     if ($r.Text -match 'ASD_DEV_NEWER_INSTALLED') {
         Fail 'your cluster home already has a newer asd-dev than this copy of wato_asd_tooling.' @(

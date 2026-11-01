@@ -15,14 +15,17 @@ function Show-Usage {
 Usage: .\asd-dev.cmd COMMAND [args]
 
   start [--name NAME] [options]  start a session, wait until it is ready, open VS Code
-                          options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
-                          --gpu-type TYPE --tmpdisk MiB --no-docker-state; --no-code; --folder PATH
+                          options are sbatch's: --cpus-per-task/-c N --mem 16G --time/-t 6:00:00
+                          --gres tmpdisk:MiB,shard:MiB --gpus/-G N --partition/-p NAME
+                          --nodelist/-w NODES --exclude/-x NODES; also --docker-state yes|no,
+                          --no-code (do not open VS Code), --folder PATH
   code [--name NAME] [--folder PATH]  open VS Code in a running session
   add --name NAME         add the host asd-dev-session-NAME for a named session (start does it too)
   stop [--name NAME] [--now]  stop a session (--all: every session)
   status [--name NAME]    list your sessions
   logs [--name NAME] [-f] show a session's log
-  config [key=value ...]  show or change your session defaults (stored on the cluster)
+  config [options]        show or change your session defaults (the options of start;
+                          --unset OPTION removes one), e.g. config --gres tmpdisk:40960
   ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run setup
 
@@ -44,7 +47,7 @@ function Get-HelperPath {
 
 function Invoke-Remote([string[]]$words) {
     foreach ($w in $words) {
-        if ($w -notmatch '^[A-Za-z0-9_:.=/+-]*$') { Write-Host "asd-dev: unsupported character in '$w'"; exit 1 }
+        if ($w -notmatch '^[A-Za-z0-9_:.,=/+-]*$') { Write-Host "asd-dev: unsupported character in '$w'"; exit 1 }
     }
     # --from tells the helper to print command hints in this wrapper's form (.\asd-dev.cmd ...).
     $cmd = (Get-HelperPath) + ' --from=windows ' + ($words -join ' ')
@@ -113,14 +116,13 @@ if ($args.Count -gt 1) { $rest = @($args[1..($args.Count - 1)] | ForEach-Object 
 switch ($cmd) {
     'start' {
         $words = @('start'); $noCode = $false; $folder = ''; $name = ''
-        $valued = @('--cpus', '--mem', '--time', '--tmpdisk', '--vram', '--gpus', '--gpu-type', '--partition')
         for ($i = 0; $i -lt $rest.Count; $i++) {
             if ($rest[$i] -eq '--no-code') { $noCode = $true }
             elseif ($rest[$i] -eq '--folder') { $folder = Get-Value $rest $i; $i++ }
-            elseif ($valued -contains $rest[$i]) { $words += $rest[$i]; $words += (Get-Value $rest $i); $i++ }
             elseif ($rest[$i] -eq '--name') { $name = Get-Value $rest $i; $words += $rest[$i]; $words += $name; $i++ }
-            elseif ($rest[$i].StartsWith('-')) { $words += $rest[$i] }
-            else { Stop-Unexpected $rest[$i] }
+            elseif ($rest[$i].StartsWith('--name=')) { $name = $rest[$i].Substring(7); $words += $rest[$i] }
+            # Session options go to the cluster helper, which checks them.
+            else { $words += $rest[$i] }
         }
         Ensure-Host $name.ToLowerInvariant()
         # stdout carries only the "ASD_DEV_READY <alias> <job>" line; messages go to stderr (the console).

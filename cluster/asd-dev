@@ -10,9 +10,9 @@
 # Keep this file ASCII-only: setup.ps1 uploads it from Windows.
 set -o errexit -o nounset -o pipefail
 
-ASD_DEV_VERSION=2.1.0-rc.5
+ASD_DEV_VERSION=2.2.0-rc.1
 # Bumped on every change; install refuses to replace a newer helper with an older one.
-ASD_DEV_SERIAL=21
+ASD_DEV_SERIAL=22
 
 # The install dir is ~/.asd-dev unless setup was given --cluster-dir (e.g. two installs side by side).
 # Inside the job $0 is SLURM's copy of this script, so the job gets ASD_DEV_ROOT from sbatch.
@@ -37,19 +37,17 @@ CLUSTER_DOMAIN=cluster.watonomous.ca
 
 export PATH="/opt/slurm/bin:$PATH"
 
-declare -A CFG=(
-    [cpus]=4
-    [mem]=16G
-    [time]=6:00:00
-    [tmpdisk]=10240
-    [vram]=0
-    [gpus]=0
-    [gpu_type]=""
-    [partition]=""
-    [docker_state]=yes
-)
-CFG_KEYS=(cpus mem time tmpdisk vram gpus gpu_type partition docker_state)
-# Settings of earlier versions, ignored when an old config still has them.
+# Session settings are sbatch's own options (by long name), plus asd-dev's --docker-state.
+OPT_KEYS=(cpus-per-task mem time partition gres gpus nodelist exclude docker-state)
+declare -A DEFAULTS=([cpus-per-task]=4 [mem]=16G [time]=6:00:00 [docker-state]=yes)
+# The job's /tmp (docker's data root) is the tmpdisk GRES; a --gres without it gets this many MiB.
+TMPDISK_DEFAULT=10240
+declare -A CFG=() FILE_SET=()
+SESSION_OPTIONS="--cpus-per-task/-c N  --mem 16G  --time/-t 6:00:00  --gres tmpdisk:MiB,shard:MiB  --gpus/-G N
+  --partition/-p NAME  --nodelist/-w NODES  --exclude/-x NODES  --docker-state yes|no"
+OPTIONS_LINE="Session options (sbatch's): -c/--cpus-per-task, --mem, -t/--time, --gres, -G/--gpus, -p/--partition, -w/--nodelist, -x/--exclude; and --docker-state yes|no"
+SETTING_EXAMPLES="Examples: --cpus-per-task 8 --mem 32G --time 4:00:00 --gres tmpdisk:40960,shard:8192 --gpus 1 --docker-state no"
+# Settings of earlier versions (key=value lines): upgrade_config drops these and converts the others.
 RETIRED_KEYS=" auto_start auto_start_cooldown idle_timeout connect_wait "
 
 # ---------------------------------------------------------------- output helpers
@@ -84,125 +82,164 @@ die() {
 
 # ---------------------------------------------------------------- config
 
-valid_value() {
+# Prints the long name of session option $1 (-c, --cpus-per-task, ...); returns 1 for others.
+option_key() {
     case $1 in
-        cpus | tmpdisk | gpus | vram) [[ $2 =~ ^[0-9]+$ ]] ;;
-        mem) [[ $2 =~ ^[0-9]+[KMGT]?$ ]] ;;
-        time) [[ $2 =~ ^([0-9]+-)?[0-9]+(:[0-9]{1,2}){0,2}$ ]] ;;
-        gpu_type | partition) [[ $2 =~ ^[A-Za-z0-9_]*$ ]] ;;
-        docker_state) [[ $2 == yes || $2 == no ]] ;;
+        -c) printf 'cpus-per-task' ;;
+        -t) printf 'time' ;;
+        -p) printf 'partition' ;;
+        -G) printf 'gpus' ;;
+        -w) printf 'nodelist' ;;
+        -x) printf 'exclude' ;;
+        --?*) [[ " ${OPT_KEYS[*]} " == *" ${1#--} "* ]] && printf '%s' "${1#--}" ;;
         *) return 1 ;;
     esac
 }
 
-# Applies "key=value" words to CFG. $1 is a label used in error messages.
+valid_value() { # valid_value KEY VALUE
+    local items item
+    case $1 in
+        cpus-per-task) [[ $2 =~ ^[1-9][0-9]*$ ]] ;;
+        mem) [[ $2 =~ ^[1-9][0-9]*[KMGT]?$ ]] ;;
+        time) [[ $2 =~ ^([0-9]+-)?[0-9]+(:[0-9]{1,2}){0,2}$ ]] ;;
+        partition | nodelist | exclude) [[ $2 =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] ;;
+        gpus) [[ $2 =~ ^([A-Za-z0-9_-]+:)?[1-9][0-9]*$ ]] ;;
+        gres)
+            [[ -n $2 && $2 != ,* && $2 != *, && $2 != *,,* ]] || return 1
+            IFS=, read -ra items <<<"$2"
+            for item in "${items[@]}"; do
+                [[ $item =~ ^[a-z][a-z0-9_]*(:[A-Za-z0-9_-]+)?(:[0-9]+[KMG]?)?$ ]] || return 1
+            done
+            ;;
+        docker-state) [[ $2 == yes || $2 == no ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+# Applies "key=value" words (key = long option name) to CFG. $1 is a label for error messages.
 apply_settings() {
     local origin=$1 kv key value
     shift
     for kv in "$@"; do
-        [[ $kv == *=* ]] || die "$origin: expected key=value, got '$kv'"
         key=${kv%%=*}
         value=${kv#*=}
-        if [[ $RETIRED_KEYS == *" $key "* ]]; then
-            [[ $origin == "$CONFIG" ]] && continue
-            die "$origin: '$key' is no longer used: sessions start only with start and end at their time limit or with stop."
-        fi
-        [[ -v CFG[$key] ]] || die "$origin: unknown setting '$key'" "Known settings: ${CFG_KEYS[*]}"
-        valid_value "$key" "$value" || die "$origin: invalid value for $key: '$value'" \
-            "Examples: cpus=8 mem=32G time=6:00:00 tmpdisk=40960 vram=8192 gpus=1 gpu_type=rtx_3090 docker_state=no"
+        valid_value "$key" "$value" || die "$origin: invalid value for --$key: '$value'" "$SETTING_EXAMPLES"
         CFG[$key]=$value
     done
 }
 
+# Puts the built-in defaults and then the config file's options into CFG, and the file's own
+# options into FILE_SET.
 load_config() {
+    local line key k
+    CFG=() FILE_SET=()
+    for k in "${OPT_KEYS[@]}"; do CFG[$k]=${DEFAULTS[$k]:-}; done
     [[ -f $CONFIG ]] || return 0
-    local line settings=()
+    # shellcheck disable=SC2094 # $CONFIG is only a label in apply_settings' messages
     while IFS= read -r line || [[ -n $line ]]; do
         line=${line%%#*}
         line=${line//[[:space:]]/}
-        [[ -n $line ]] && settings+=("$line")
+        [[ -n $line ]] || continue
+        if [[ $line != --*=* ]] || ! key=$(option_key "${line%%=*}"); then
+            die "$CONFIG: cannot read '$line'." "Each line is one option, such as --mem=32G. Change them with: $(hint "config --mem 32G")"
+        fi
+        apply_settings "$CONFIG" "$key=${line#*=}"
+        FILE_SET[$key]=${line#*=}
     done <"$CONFIG"
-    if ((${#settings[@]})); then apply_settings "$CONFIG" "${settings[@]}"; fi
-}
-
-# Sets key=value in the config file, keeping the line's comment (it explains the setting).
-write_config_value() {
-    local key=$1 value=$2 tmp
-    tmp=$(mktemp "$CONFIG.XXXXXX")
-    awk -v k="$key" -v v="$value" '
-        $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
-            if (!done) {
-                c = index($0, "#"); line = k "=" v
-                if (c) { pad = 22 - length(line); if (pad < 1) pad = 1; line = line sprintf("%" pad "s", "") substr($0, c) }
-                print line
-            }
-            done = 1; next
-        }
-        { print }
-        END { if (!done) print k "=" v }' "$CONFIG" >"$tmp"
-    mv -f "$tmp" "$CONFIG"
 }
 
 config_header() {
     cat <<'EOF'
-# asd-dev defaults for new sessions. Edit this file, or change it from your laptop with
-#   ./asd-dev config key=value   (in your wato_asd_tooling folder; on Windows: .\asd-dev.cmd config key=value)
-# or with "asd-dev config key=value" in a session's terminal. One-off overrides: ./asd-dev start --cpus 8 ...
+# asd-dev defaults for new sessions: sbatch options, one per line (--option=value). Change them
+# from your laptop with  ./asd-dev config --mem 32G --gres tmpdisk:40960,shard:8192  (Windows:
+# .\asd-dev.cmd config ...; in a session's terminal: asd-dev config ...) or edit this file;
+# "config --unset mem" removes a line. Without a line: --cpus-per-task=4 --mem=16G --time=6:00:00
+# --docker-state=yes, and --gres always includes tmpdisk:10240 (the job's /tmp) unless it names tmpdisk.
 EOF
 }
 
-create_default_config() {
-    config_header >"$CONFIG"
-    cat >>"$CONFIG" <<'EOF'
-cpus=4                # CPU cores
-mem=16G               # RAM
-time=6:00:00          # time limit (WATcloud asks interactive work to stay within 6 hours)
-tmpdisk=10240         # MiB of job-local /tmp, where docker keeps images; CARLA needs 40960; above ~66000 two nodes cannot run it
-vram=0                # MiB of GPU memory as a shared GPU slice ("shard"); 0 = no GPU
-gpus=0                # whole GPUs instead of a slice (overrides vram when > 0)
-gpu_type=             # e.g. rtx_3090; empty = any
-partition=            # empty = cluster default
-docker_state=yes      # restore docker images/containers at start, save them when the session ends
-EOF
-}
+create_default_config() { config_header >"$CONFIG"; }
 
-# Drops retired settings (with their comment continuation lines) and the old header from a config
-# written by an earlier version, since their comments describe behaviour that is gone.
-upgrade_config() {
-    local tmp
+# Writes FILE_SET to the config file.
+write_config() {
+    local tmp k
     tmp=$(mktemp "$CONFIG.XXXXXX")
     {
-        grep -qxF "$(config_header | head -n1)" "$CONFIG" || config_header
-        awk -v retired="$RETIRED_KEYS" '
-            /^# asd-dev defaults for new sessions\. Edit freely/ || /^# One-off overrides: asd-dev start/ { next }
-            { key = $0; sub(/^[[:space:]]*/, "", key); sub(/[[:space:]]*=.*/, "", key) }
-            /^[[:space:]]*[a-z_]+[[:space:]]*=/ && index(retired, " " key " ") { dropped = 1; next }
-            dropped && /^[[:space:]]+#/ { next }
-            { dropped = 0; print }' "$CONFIG"
+        config_header
+        for k in "${OPT_KEYS[@]}"; do
+            if [[ -v FILE_SET[$k] ]]; then printf -- '--%s=%s\n' "$k" "${FILE_SET[$k]}"; fi
+        done
     } >"$tmp"
-    if cmp -s "$tmp" "$CONFIG"; then rm -f "$tmp"; else mv -f "$tmp" "$CONFIG"; fi
+    mv -f "$tmp" "$CONFIG"
 }
 
-describe_resources() {
-    local gpu="no GPU"
-    if ((CFG[gpus] > 0)); then
-        gpu="${CFG[gpus]} GPU(s)${CFG[gpu_type]:+ (${CFG[gpu_type]})}"
-    elif ((CFG[vram] > 0)); then
-        gpu="${CFG[vram]} MiB GPU slice${CFG[gpu_type]:+ (${CFG[gpu_type]})}"
+# Converts a config of an earlier version (key=value lines) to sbatch options, keeping its values;
+# retired settings are dropped. The old file stays as config.old.
+upgrade_config() {
+    grep -qE '^[[:space:]]*[a-z_]+[[:space:]]*=' "$CONFIG" || return 0
+    local line gpu="" gres="" type
+    local -A old=()
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%%#*}
+        line=${line//[[:space:]]/}
+        if [[ $line =~ ^([a-z_]+)=(.*)$ ]]; then old[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}; fi
+    done <"$CONFIG"
+    FILE_SET=()
+    if [[ -n ${old[cpus]:-} ]]; then FILE_SET[cpus-per-task]=${old[cpus]}; fi
+    if [[ -n ${old[mem]:-} ]]; then FILE_SET[mem]=${old[mem]}; fi
+    if [[ -n ${old[time]:-} ]]; then FILE_SET[time]=${old[time]}; fi
+    if [[ -n ${old[partition]:-} ]]; then FILE_SET[partition]=${old[partition]}; fi
+    if [[ -n ${old[docker_state]:-} ]]; then FILE_SET[docker-state]=${old[docker_state]}; fi
+    # Old meaning: gpus = whole GPUs (wins over vram), vram = MiB of a GPU slice, gpu_type for either.
+    type=${old[gpu_type]:+${old[gpu_type]}:}
+    if [[ ${old[gpus]:-0} =~ ^[1-9][0-9]*$ ]]; then
+        gpu="gpu:$type${old[gpus]}"
+    elif [[ ${old[vram]:-0} =~ ^[1-9][0-9]*$ ]]; then
+        gpu="shard:$type${old[vram]}"
     fi
-    printf '%s CPUs, %s RAM, %s MiB /tmp, %s, time limit %s' \
-        "${CFG[cpus]}" "${CFG[mem]}" "${CFG[tmpdisk]}" "$gpu" "${CFG[time]}"
+    gres=${old[tmpdisk]:+tmpdisk:${old[tmpdisk]}}
+    if [[ -n $gpu ]]; then gres+=${gres:+,}$gpu; fi
+    if [[ -n $gres ]]; then FILE_SET[gres]=$gres; fi
+    cp "$CONFIG" "$CONFIG.old"
+    write_config
+    say "converted your session defaults to sbatch options (the old file is $CONFIG.old)."
 }
 
-gres_string() {
-    local gres="tmpdisk:${CFG[tmpdisk]}" type=""
-    [[ -n ${CFG[gpu_type]} ]] && type="${CFG[gpu_type]}:"
-    if ((CFG[gpus] > 0)); then
-        gres+=",gpu:$type${CFG[gpus]}"
-    elif ((CFG[vram] > 0)); then
-        gres+=",shard:$type${CFG[vram]}"
+# The --gres a session gets: CFG's, with the default tmpdisk added when it names none.
+effective_gres() {
+    if [[ ,${CFG[gres]}, == *,tmpdisk,* || ,${CFG[gres]}, == *,tmpdisk:* ]]; then
+        printf '%s' "${CFG[gres]}"
+    else
+        printf 'tmpdisk:%s%s' "$TMPDISK_DEFAULT" "${CFG[gres]:+,${CFG[gres]}}"
     fi
-    printf '%s' "$gres"
+}
+
+# The session settings as sbatch options, joined by $1 (default: a space).
+sbatch_options() {
+    local k v out=()
+    for k in "${OPT_KEYS[@]}"; do
+        v=${CFG[$k]}
+        [[ $k == gres ]] && v=$(effective_gres)
+        if [[ -n $v ]]; then out+=("--$k=$v"); fi
+    done
+    local IFS=${1:- }
+    printf '%s' "${out[*]}"
+}
+describe_resources() { sbatch_options " "; }
+
+# How an option of an earlier version is written now: old_option_hint KEY VALUE.
+old_option_hint() {
+    case $1 in
+        cpus) printf -- '--cpus-per-task %s' "$2" ;;
+        tmpdisk) printf -- '--gres tmpdisk:%s' "$2" ;;
+        vram) printf -- '--gres shard:%s (a GPU slice of that many MiB)' "$2" ;;
+        gpu-type | gpu_type) printf -- '--gres gpu:%s:1 (a whole GPU) or --gres shard:%s:MiB (a slice)' "$2" "$2" ;;
+        no-gpu) printf 'no GPU option (config --unset gres --unset gpus clears saved ones)' ;;
+        no-docker-state) printf -- '--docker-state no' ;;
+        docker_state) printf -- '--docker-state %s' "$2" ;;
+        mem | time | partition | gpus) printf -- '--%s %s' "$1" "$2" ;;
+        *) return 1 ;;
+    esac
 }
 
 # ---------------------------------------------------------------- session naming
@@ -406,37 +443,57 @@ cmd_proxy() {
     exit "$rc"
 }
 
-# Parses start/stop/status/logs flags into FLAG_* and NAME.
+# Parses the arguments of start/stop/status/logs/config into NAME, FLAG_* and FLAG_SETTINGS
+# ("key=value", key = sbatch's long option name).
 parse_session_flags() {
     # Inside a session, "asd-dev stop" means this session (sshd's SetEnv provides ASD_DEV_SESSION).
-    NAME=${ASD_DEV_SESSION:-default} NAME_GIVEN=no FLAG_SETTINGS=() FLAG_NOW=no FLAG_JOB="" FLAG_ALL=no
-    FLAG_FOLLOW=no RESET_DOCKER_STATE=no
+    NAME=${ASD_DEV_SESSION:-default} NAME_GIVEN=no FLAG_SETTINGS=() FLAG_UNSET=() FLAG_NOW=no FLAG_JOB=""
+    FLAG_ALL=no FLAG_FOLLOW=no RESET_DOCKER_STATE=no
+    local word opt value key hint_text
     while (($#)); do
-        case $1 in
-            --name | --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --partition | --job)
-                (($# >= 2)) || die "$1 needs a value" ;;
-        esac
-        case $1 in
-            --name) NAME=$2 NAME_GIVEN=yes; shift ;;
-            --cpus) FLAG_SETTINGS+=("cpus=$2"); shift ;;
-            --mem) FLAG_SETTINGS+=("mem=$2"); shift ;;
-            --time) FLAG_SETTINGS+=("time=$2"); shift ;;
-            --tmpdisk) FLAG_SETTINGS+=("tmpdisk=$2"); shift ;;
-            --vram) FLAG_SETTINGS+=("vram=$2" "gpus=0"); shift ;;
-            --gpus) FLAG_SETTINGS+=("gpus=$2"); shift ;;
-            --gpu-type) FLAG_SETTINGS+=("gpu_type=$2"); shift ;;
-            --no-gpu) FLAG_SETTINGS+=("gpus=0" "vram=0") ;;
-            --partition) FLAG_SETTINGS+=("partition=$2"); shift ;;
-            --docker-state) FLAG_SETTINGS+=("docker_state=yes") ;;
-            --no-docker-state) FLAG_SETTINGS+=("docker_state=no") ;;
+        word=$1 opt=$1 value=""
+        if [[ $word == --*=* ]]; then opt=${word%%=*} value=${word#*=}; fi
+        key=$(option_key "$opt") || key=""
+        if [[ -n $key || $opt == --name || $opt == --job || $opt == --unset ]] && [[ $word != *=* ]]; then
+            (($# >= 2)) || die "$opt needs a value"
+            value=$2
+            shift
+        fi
+        if [[ -n $key ]]; then
+            FLAG_SETTINGS+=("$key=$value")
+            shift
+            continue
+        fi
+        case $opt in
+            --name) NAME=$value NAME_GIVEN=yes ;;
+            --job) FLAG_JOB=$value ;;
+            --unset)
+                key=$(option_key "--${value#--}") || key=$(option_key "$value") ||
+                    die "--unset: '$value' is not a session option." "$OPTIONS_LINE"
+                FLAG_UNSET+=("$key")
+                ;;
             --reset-docker-state) RESET_DOCKER_STATE=yes ;;
             --now) FLAG_NOW=yes ;;
             --all) FLAG_ALL=yes ;;
-            --job) FLAG_JOB=$2; shift ;;
             -f | --follow) FLAG_FOLLOW=yes ;;
             -h | --help) usage; exit 0 ;;
-            -*) die "unknown option '$1'" "Run: $(hint help)" ;;
-            *) die "unexpected argument '$1'; to name a session use --name $1" ;;
+            --cpus | --tmpdisk | --vram | --gpu-type | --no-gpu | --no-docker-state)
+                die "$opt is gone: asd-dev now takes sbatch's own options. Use $(old_option_hint "${opt#--}" "${2:-N}")." ;;
+            -o | --output | -e | --error | -J | --job-name | --comment | --wrap | -a | --array | -D | --chdir | \
+                --export | --signal | --parsable | -W | --wait | -n | --ntasks | -N | --nodes)
+                die "$opt cannot be used: the session job sets it itself, or it would break the session." \
+                    "$OPTIONS_LINE" ;;
+            -*) die "unknown option '$opt'" "$OPTIONS_LINE" ;;
+            *=*)
+                key=${word%%=*}
+                if [[ $RETIRED_KEYS == *" $key "* ]]; then
+                    die "'$key' is no longer used: sessions start only with start and end at their time limit or with stop."
+                fi
+                hint_text=$(old_option_hint "$key" "${word#*=}") ||
+                    die "unexpected argument '$word'" "$OPTIONS_LINE"
+                die "'$word' is the old form: asd-dev now takes sbatch's own options. Use $hint_text."
+                ;;
+            *) die "unexpected argument '$word'; to name a session use --name $word" ;;
         esac
         shift
     done
@@ -456,6 +513,7 @@ refuse_existing() { # dies for the session job in J_*
 
 cmd_start() {
     parse_session_flags "$@"
+    ((${#FLAG_UNSET[@]} == 0)) || die "--unset works only with config."
     load_config
     if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
     if find_session_job "$NAME"; then refuse_existing; fi
@@ -468,21 +526,21 @@ cmd_start() {
         --comment="$JOB_COMMENT"
         --chdir="$HOME"
         --output="$LOGS/%j.log"
-        --cpus-per-task="${CFG[cpus]}"
-        --mem="${CFG[mem]}"
-        --time="${CFG[time]}"
-        --gres="$(gres_string)"
+        --gres="$(effective_gres)"
         --signal=B:USR1@600
         --export=ALL,ASD_DEV_ROOT="$ROOT"
     )
-    [[ -n ${CFG[partition]} ]] && args+=(--partition="${CFG[partition]}")
+    local k
+    for k in cpus-per-task mem time partition gpus nodelist exclude; do
+        if [[ -n ${CFG[$k]} ]]; then args+=("--$k=${CFG[$k]}"); fi
+    done
     # --export=ALL would carry GPU and SLURM variables of a session this runs in into the new job.
     local v unset=()
     for v in $(compgen -v SLURM_) CUDA_VISIBLE_DEVICES GPU_DEVICE_ORDINAL ROCR_VISIBLE_DEVICES ASD_DEV_SESSION; do
         [[ $v == SLURM_CONF ]] || unset+=(-u "$v")
     done
     if ! out=$(env "${unset[@]}" sbatch "${args[@]}" "$ROOT/bin/asd-dev" _job "$NAME" \
-        "docker_state=${CFG[docker_state]}" "reset_docker_state=$RESET_DOCKER_STATE" 2>&1 </dev/null); then
+        "docker_state=${CFG[docker-state]}" "reset_docker_state=$RESET_DOCKER_STATE" "gres=$(effective_gres)" 2>&1 </dev/null); then
         die "SLURM rejected the session job:" "$out" "Requested: $(describe_resources)"
     fi
     local new
@@ -585,8 +643,8 @@ cmd_status() {
         IFS='|' read -r cpus mem gres <<<"$(printf '%s' "$line" | cut -d'|' -f9-11)"
         [[ $J_STATE == RUNNING ]] && is_stopping "$J_ID" && J_STATE=STOPPING
         name=$(name_from_job_name "$J_NAME")
-        printf '%-10s %-8s %-10s %-14s %-12s %s CPUs, %s RAM, %s\n' "$name" "$J_ID" \
-            "$J_STATE" "${J_NODE:-"-"}" "$J_LEFT" "$cpus" "$mem" "${gres#gres/}" >&2
+        printf '%-10s %-8s %-10s %-14s %-12s --cpus-per-task=%s --mem=%s --gres=%s\n' "$name" "$J_ID" \
+            "$J_STATE" "${J_NODE:-"-"}" "$J_LEFT" "$cpus" "$mem" "${gres//gres\//}" >&2
         if [[ $J_STATE == PENDING ]]; then say "  job $J_ID is $(explain_reason "$J_REASON" || true)"; fi
         if [[ $seen == *" $name "* ]]; then
             say "  WARNING: job $J_ID is a second '$name' session, which connections do not use; stop it with: $(hint "stop --job $J_ID")"
@@ -624,23 +682,28 @@ cmd_logs() {
 }
 
 cmd_config() {
+    parse_session_flags "$@"
+    [[ $NAME_GIVEN == no ]] || die "config sets the defaults of every session; it takes no --name."
     mkdir -p "$ROOT"
     [[ -f $CONFIG ]] || create_default_config
     load_config
-    if (($#)); then
-        apply_settings "command line" "$@"
-        local kv
-        for kv in "$@"; do write_config_value "${kv%%=*}" "${kv#*=}"; done
+    if ((${#FLAG_SETTINGS[@]} + ${#FLAG_UNSET[@]})); then
+        if ((${#FLAG_SETTINGS[@]})); then apply_settings "command line" "${FLAG_SETTINGS[@]}"; fi
+        local kv k
+        for k in ${FLAG_UNSET[@]+"${FLAG_UNSET[@]}"}; do unset "FILE_SET[$k]"; done
+        for kv in ${FLAG_SETTINGS[@]+"${FLAG_SETTINGS[@]}"}; do FILE_SET[${kv%%=*}]=${kv#*=}; done
+        write_config
+        load_config
         say "saved to $CONFIG"
     fi
-    local k
-    for k in "${CFG_KEYS[@]}"; do printf '%s=%s\n' "$k" "${CFG[$k]}"; done
+    sbatch_options $'\n'
+    printf '\n'
 }
 
 # ---------------------------------------------------------------- command: install (run by setup)
 
 cmd_install() {
-    local src kv installed_serial
+    local src installed_serial
     src="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     installed_serial=$(sed -n 's/^ASD_DEV_SERIAL=\([0-9]*\)$/\1/p' "$ROOT/bin/asd-dev" 2>/dev/null | head -n1 || true)
     if ((${installed_serial:-0} > ASD_DEV_SERIAL)) && [[ ${ASD_DEV_ALLOW_DOWNGRADE:-} != yes ]]; then
@@ -660,10 +723,6 @@ cmd_install() {
     printf '%s\n' "Files of wato_asd_tooling (asd-dev): VS Code dev sessions in SLURM jobs. Run $ROOT/bin/asd-dev help" >"$ROOT/README"
     if [[ -f $CONFIG ]]; then upgrade_config; else create_default_config; fi
     load_config
-    if (($#)); then
-        apply_settings "setup" "$@"
-        for kv in "$@"; do write_config_value "${kv%%=*}" "${kv#*=}"; done
-    fi
     if [[ ! -f $HOSTKEY ]]; then
         ssh-keygen -q -t ed25519 -N '' -C "asd-dev session host key" -f "$HOSTKEY" </dev/null
         # Default ACLs on some homes make it group-readable, and sshd then refuses the key.
@@ -671,7 +730,8 @@ cmd_install() {
     fi
     find "$LOGS" -name '*.log' -mtime +14 -delete 2>/dev/null || true
     cleanup_stale
-    say "session defaults: $(describe_resources); change them with: $(hint "config key=value")"
+    say "session defaults: $(describe_resources)"
+    say "change them with: $(hint "config --mem 32G --gres tmpdisk:40960,shard:8192")"
     printf 'ASD_DEV_INSTALLED %s %s %s\n' "$ASD_DEV_VERSION" "$(id -un)" "$(id -u)"
     printf 'ASD_DEV_HOSTKEY %s\n' "$(cut -d' ' -f1,2 "$HOSTKEY.pub")"
     if [[ ! -s /etc/cluster/users/$(id -u)/.ssh/authorized_keys && ! -s $HOME/.ssh/authorized_keys ]]; then
@@ -773,7 +833,7 @@ load_docker_state() (
     avail=$(df --output=avail -B1 /tmp | tail -n1 | tr -d ' ')
     if [[ $need =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]] && ((need + need / 10 > avail)); then
         saving_off "the saved docker state needs $(numfmt --to=iec "$need")B in /tmp, but this session has only $(numfmt --to=iec "$avail")B" \
-            "To restore it: $(restart_hint "--tmpdisk $((need * 12 / 10 / 1048576 + 4096))")"
+            "To restore it: $(restart_hint "--gres $(gres_with_tmpdisk $((need * 12 / 10 / 1048576 + 4096)))")"
         return 0
     fi
     log "[docker] loading saved docker state ($(human_size /dev/fd/3)) from $DOCKER_STATE_DIR/$base ..."
@@ -786,7 +846,7 @@ load_docker_state() (
     rootlesskit rm -rf /tmp/docker || true
     if [[ $use =~ ^[0-9]+$ ]] && ((use >= 95)); then
         saving_off "restoring the saved docker state ran out of /tmp" \
-            "To restore it: $(restart_hint "--tmpdisk $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))")"
+            "To restore it: $(restart_hint "--gres $(gres_with_tmpdisk $(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2)))")"
         return 0
     fi
     failures=$(($(cat "./$base.failures" 2>/dev/null || echo 0) + 1))
@@ -947,16 +1007,28 @@ notify_terminals() {
     done
 }
 
+# This job's --gres with tmpdisk set to $1 MiB (for hints that give the next session more /tmp).
+gres_with_tmpdisk() {
+    local items item out="tmpdisk:$1"
+    IFS=, read -ra items <<<"$JOB_GRES"
+    for item in "${items[@]}"; do
+        if [[ $item != tmpdisk && $item != tmpdisk:* ]]; then out+=",$item"; fi
+    done
+    printf '%s' "$out"
+}
+
 # Warns once when the job's /tmp (docker's data root) is nearly full.
 check_tmp_space() {
-    local use msg
+    local use msg mib
     use=$(df -P /tmp 2>/dev/null | awk 'NR == 2 { sub(/%/, "", $5); print $5 }')
     [[ $use =~ ^[0-9]+$ ]] || return 0
     if ((use >= 90)) && [[ $TMP_WARNED != yes ]]; then
         TMP_WARNED=yes
         msg="asd-dev: /tmp of this session is ${use}% full ($(df -Ph /tmp | awk 'NR == 2 { print $3 " of " $2 }'));"
         msg+=" docker keeps its images there. Free space with 'docker system prune', or give the next session more:"
-        msg+=" asd-dev config tmpdisk=40960 here, then $(restart_hint)"
+        mib=$(($(df --output=size -B1M /tmp | tail -n1 | tr -d ' ') * 2))
+        ((mib > 40960)) || mib=40960
+        msg+=" asd-dev config --gres $(gres_with_tmpdisk "$mib") here, then $(restart_hint)"
         log "$msg"
         notify_terminals "$msg"
     elif ((use < 80)); then
@@ -995,11 +1067,12 @@ cmd_job() {
     shift || true
     check_name "$SESSION_NAME"
     local kv
-    DOCKER_STATE=yes RESET_DOCKER_STATE=no
+    DOCKER_STATE=yes RESET_DOCKER_STATE=no JOB_GRES="tmpdisk:$TMPDISK_DEFAULT"
     for kv in "$@"; do
         case $kv in
             docker_state=*) DOCKER_STATE=${kv#*=} ;;
             reset_docker_state=*) RESET_DOCKER_STATE=${kv#*=} ;;
+            gres=*) JOB_GRES=${kv#*=} ;;
         esac
     done
     # Traps first: with a short --time, SLURM's USR1 can arrive within seconds of the start.
@@ -1084,13 +1157,14 @@ session's terminal as asd-dev; on a login node as ~/$INSTALL_ID/bin/asd-dev.
   asd-dev stop --all | --job ID
   asd-dev status [--name NAME]           list your sessions
   asd-dev logs [--name NAME] [-f]        show a session's log
-  asd-dev config [key=value ...]   show or change your defaults ($CONFIG)
+  asd-dev config [options] [--unset OPTION]  show or change your defaults ($CONFIG)
   asd-dev version
 
-Options for start (one-off; use "asd-dev config" to change defaults):
-  --cpus N  --mem 16G  --time 6:00:00  --tmpdisk MiB
-  --vram MiB (shared GPU slice)  --gpus N (whole GPUs)  --gpu-type rtx_3090  --no-gpu
-  --no-docker-state  --reset-docker-state  --partition NAME
+Session options, sbatch's own (one-off with start; saved as defaults with config):
+  $SESSION_OPTIONS
+  e.g. --gres tmpdisk:40960 (CARLA), --gres shard:8192 (8 GiB slice of a GPU), --gres gpu:rtx_3090:1
+  A --gres without tmpdisk gets tmpdisk:$TMPDISK_DEFAULT (the job's /tmp, where docker keeps images).
+start only: --reset-docker-state (move the saved docker state aside and start empty)
 
 Connecting VS Code to asd-dev-session[-NAME] only connects; it never starts a session.
 --name runs more than one session: "asd-dev start --name gpu" is reached as "asd-dev-session-gpu".

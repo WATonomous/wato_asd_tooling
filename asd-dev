@@ -13,14 +13,17 @@ usage() {
 Usage: ./asd-dev COMMAND [args]
 
   start [--name NAME] [options]  start a session, wait until it is ready, open VS Code
-                          options: --cpus N --mem 16G --time 6:00:00 --vram MiB --gpus N
-                          --gpu-type TYPE --tmpdisk MiB --no-docker-state; --no-code; --folder PATH
+                          options are sbatch's: --cpus-per-task/-c N --mem 16G --time/-t 6:00:00
+                          --gres tmpdisk:MiB,shard:MiB --gpus/-G N --partition/-p NAME
+                          --nodelist/-w NODES --exclude/-x NODES; also --docker-state yes|no,
+                          --no-code (do not open VS Code), --folder PATH
   code [--name NAME] [--folder PATH]  open VS Code in a running session
   add --name NAME         add the host asd-dev-session-NAME for a named session (start does it too)
   stop [--name NAME] [--now]  stop a session (--all: every session)
   status [--name NAME]    list your sessions
   logs [--name NAME] [-f] show a session's log
-  config [key=value ...]  show or change your session defaults (stored on the cluster)
+  config [options]        show or change your session defaults (the options of start;
+                          --unset OPTION removes one), e.g. config --gres tmpdisk:40960
   ssh [--name NAME] [command]  open a terminal (or run a command) in a session
   setup [options]         run ./setup.sh
 
@@ -97,11 +100,11 @@ cmd_start() {
         case $1 in
             --no-code) no_code=yes ;;
             --folder) need_value "$@"; folder=$2; shift ;;
-            --cpus | --mem | --time | --tmpdisk | --vram | --gpus | --gpu-type | --partition)
-                need_value "$@"; args+=("$1" "$2"); shift ;;
+            --folder=*) folder=${1#*=} ;;
             --name) need_value "$@"; name=$2; args+=("$1" "$2"); shift ;;
-            -*) args+=("$1") ;;
-            *) unexpected "$1" ;;
+            --name=*) name=${1#*=}; args+=("$1") ;;
+            # Session options go to the cluster helper, which checks them.
+            *) args+=("$1") ;;
         esac
         shift
     done
